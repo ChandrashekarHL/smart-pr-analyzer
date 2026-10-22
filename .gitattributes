@@ -1,0 +1,11 @@
+# Everything is LF. The code is edited on Windows and executed on Linux; a
+# shell script that picks up CRLF fails there with "set: pipefail: invalid
+# option name" (it killed a GPU job on 2026-10-19). tests/test_repo_hygiene.py
+# enforces the same rule on the working tree.
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.docx binary
+*.key binary
