@@ -1,0 +1,61 @@
+# Final production run - DeepSeek-Coder 6.7B on the DGX Spark (GB10, 128 GB).
+#
+# NOTE ON QUANTISATION: load_in_4bit is left ON to match the approved design,
+# but the Spark has 128 GB of unified memory and a 6.7B in bf16 needs 13.4 GB.
+# 4-bit buys nothing here and costs dequantisation overhead on every step, and
+# bitsandbytes on aarch64 + sm_121 is the least reliable part of the stack.
+# Flip it to false for a faster, better run once the first one is on the board;
+# keep a 4-bit run as the ablation that justifies the choice either way.
+model:
+  name: deepseek-ai/deepseek-coder-6.7b-instruct
+  dtype: bfloat16
+  load_in_4bit: true
+
+  # Unsloth loader. Verified working on this GB10, but on a 0.5B probe it
+  # reported "patched 24 layers with 0 QKV layers, 0 O layers and 0 MLP
+  # layers" - its gradient checkpointing attaches, its fused Triton kernels
+  # do not. The advertised 2x is those kernels, so do not assume the speedup
+  # on aarch64 / sm_121. Decide from the A/B in runs/bench-*, not from here.
+  use_unsloth: true
+  bnb_quant_type: nf4
+  bnb_double_quant: true
+  # flash_attention_2 needs a source build for sm_121; sdpa is built in.
+  attn_implementation: sdpa
+
+data:
+  dir: data/train
+  target_field: review_comment     # switch once a labelling pass lands
+  # 4096 doubles attention cost; p90 of this corpus is ~800 tokens, so the
+  # window would sit mostly empty. Raise only if the token histogram moves.
+  max_seq_length: 2048
+  packing: true
+  context_dropout: 0.3
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  # left unset -> detected from the loaded model
+  target_modules: null
+
+train:
+  batch_size: 8
+  grad_accum: 4          # effective 32
+  epochs: 2              # eval loss usually turns by epoch 3 at this size
+  lr: 0.0001
+  scheduler: cosine
+  warmup_ratio: 0.03
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 200
+  gradient_checkpointing: true
+  optim: paged_adamw_8bit
+  seed: 13
+
+wandb:
+  enabled: true
+  project: smart-github-pr-analyzer
+  run_name: v0.3-deepseek-6.7b-qlora-unsloth
+
+output: {dir: runs/v0.3-deepseek-unsloth}

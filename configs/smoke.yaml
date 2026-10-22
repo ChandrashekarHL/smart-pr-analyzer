@@ -1,0 +1,30 @@
+# Laptop smoke test. CPU, no GPU, ~2 minutes.
+# Same code path as the real run - only the model and the scale differ.
+model:
+  name: sshleifer/tiny-gpt2
+  dtype: float32
+  load_in_4bit: false
+
+data:
+  dir: data/train
+  target_field: review_comment
+  max_seq_length: 512
+  packing: true
+  context_dropout: 0.3
+  limit: 64
+
+lora: {r: 8, alpha: 16, dropout: 0.05}
+
+train:
+  batch_size: 2
+  grad_accum: 2
+  max_steps: 4
+  lr: 0.0001
+  logging_steps: 1
+  save_steps: 1000
+  eval_steps: 1000
+  gradient_checkpointing: false
+  seed: 13
+
+wandb: {enabled: false}
+output: {dir: runs/smoke-train}

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prana"
+version = "0.1.0"
+description = "PR Analyzer - dataset construction and fine-tuning for repo-aware code review"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+# Data construction only. Deliberately dependency-free at the core so the
+# pipeline runs on any machine, including the DGX Spark's aarch64 image where
+# many wheels are unavailable.
+train = [
+  "torch>=2.5",
+  "transformers>=4.46",
+  "peft>=0.13",
+  "trl>=0.12",
+  "datasets>=3.0",
+  "accelerate>=1.0",
+  "wandb>=0.18",
+]
+eval = [
+  "evaluate>=0.4",
+  "bert-score>=0.3.13",
+  "rouge-score>=0.1.2",
+  "scikit-learn>=1.5",
+]
+dev = ["pytest>=8.0", "ruff>=0.7"]
+
+[project.scripts]
+prana-build = "prana.data.build:main"
+prana-decon = "prana.data.decontaminate:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prana"]
+
+[tool.ruff]
+line-length = 96
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

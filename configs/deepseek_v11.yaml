@@ -1,0 +1,49 @@
+# v1.1 - same recipe as v1.0, four changes aimed at v1.0's measured failures:
+#   prompt v2 (numbered diff lines)        -> line_number answerable
+#   schema order explanation-first         -> severity decided after reasoning
+#   deframed labels                        -> speaks as the reviewer
+#   rag_context where the RAG lead supplied it, with 30% dropout
+model:
+  name: deepseek-ai/deepseek-coder-6.7b-instruct
+  dtype: bfloat16
+  load_in_4bit: true
+  bnb_quant_type: nf4
+  bnb_double_quant: true
+  attn_implementation: sdpa
+  use_unsloth: true
+
+data:
+  dir: data/v1.1
+  target_field: target_text
+  max_seq_length: 2048
+  packing: true
+  context_dropout: 0.3
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: null
+
+train:
+  batch_size: 8
+  grad_accum: 4
+  epochs: 3
+  lr: 0.0001
+  scheduler: cosine
+  warmup_ratio: 0.03
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 50
+  save_total_limit: 3
+  eval_steps: 50
+  gradient_checkpointing: true
+  optim: paged_adamw_8bit
+  seed: 13
+
+wandb:
+  enabled: true
+  project: smart-github-pr-analyzer
+  run_name: v1.1-deepseek-6.7b-qlora-structured-rag
+
+output: {dir: runs/v1.1}

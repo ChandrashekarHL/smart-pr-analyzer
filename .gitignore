@@ -1,0 +1,32 @@
+# Data artifacts - 1.1 GB of scrape and 65 MB of built corpora.
+# Rebuild with `python -m prana.data.build`; the dataset card records the
+# config fingerprint needed to reproduce any given build exactly.
+v2_strict/
+data/
+runs/
+*.jsonl
+*.csv
+
+# Model artifacts
+*.safetensors
+*.bin
+checkpoints/
+wandb/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# API keys live here, never in the repo or in chat
+.secrets/
