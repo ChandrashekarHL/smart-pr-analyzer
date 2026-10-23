@@ -141,3 +141,31 @@ def test_special_token_markers_are_stripped(raw, clean):
     tokenizer did not know it was special. Scoring must never see it."""
     from prana.eval.generate import clean_completion
     assert clean_completion(raw) == clean
+
+
+# ------------------------------------------------------------- prompt budget
+
+class _CharTokenizer:
+    """Two characters per token, like real code through the DeepSeek tokenizer."""
+    chat_template = None
+
+    def __call__(self, text, add_special_tokens=False):
+        return {"input_ids": list(range(len(text) // 2))}
+
+
+def test_render_within_budget_shrinks_the_hunk_until_it_fits():
+    """35 of v1.1's 41 invalid outputs were prompts over 2,048 tokens whose
+    tail got truncated; the character cap alone did not catch them."""
+    from prana.eval.generate import render_within_budget
+    big = "@@ -1,3000 +1,3000 @@\n" + "\n".join(f"+line {i} {'y' * 30}" for i in range(3000))
+    text = render_within_budget(_CharTokenizer(), big, "go", None, "v2", budget=1792)
+    assert len(text) // 2 <= 1792
+    assert "Review this hunk." in text  # plain-text fallback appends ASSISTANT: after it
+    assert "lines omitted" in text
+
+
+def test_render_within_budget_leaves_small_hunks_alone():
+    from prana.eval.generate import render_within_budget
+    small = "@@ -1 +1 @@\n+x := y"
+    text = render_within_budget(_CharTokenizer(), small, "go", None, "v2")
+    assert "+x := y" in text and "lines omitted" not in text

@@ -100,12 +100,16 @@ PROMPT_FINGERPRINT = CURRENT.fingerprint()
 
 _HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
-# ~1,700 tokens of diff. The sequence window is 2,048; system prompt, template
-# and a response need the rest. A hunk over this is cut in the MIDDLE so the
-# template's tail ("Review this hunk.") always survives: with right-side
-# tokenizer truncation it did not, and the model - never shown the end of the
-# prompt - simply continued the diff. That was 34 of v1.1's 42 invalid outputs.
-MAX_HUNK_CHARS = 6000
+# A hunk over this is cut in the MIDDLE so the template's tail ("Review this
+# hunk.") always survives: with right-side tokenizer truncation it did not,
+# and the model - never shown the end of the prompt - simply continued the
+# diff. That was 35 of v1.1's 41 invalid outputs, measured with the real
+# tokenizer. Code tokenises at roughly 2 characters per token (a 6,016-char hex
+# table came to 3,036 tokens), so the first cap of 6,000 still let prompts
+# through at 2,300-3,000 tokens. 3,600 chars is ~1,800 tokens at that rate;
+# callers that have the tokenizer also enforce an exact budget
+# (`prana.eval.generate.render_within_budget`).
+MAX_HUNK_CHARS = 3600
 _OMITTED = "... [{n} lines omitted] ..."
 
 
@@ -176,14 +180,15 @@ def _resolve(version: str | None) -> PromptVersion:
 
 
 def build_user_message(diff: str, language: str, context: str | None = None,
-                       version: str | None = None) -> str:
+                       version: str | None = None,
+                       max_hunk_chars: int = MAX_HUNK_CHARS) -> str:
     pv = _resolve(version)
     body = diff.rstrip()
     if pv.numbered_lines:
         body = number_hunk(body)
     # Cut AFTER numbering so the cap covers the prefixes too: a hunk of many
     # short lines gains ~6 chars per line from the numbers.
-    body = fit_hunk(body)
+    body = fit_hunk(body, max_hunk_chars)
     return pv.user_template.format(
         language=language,
         context=(context.strip() if context and context.strip() else NO_CONTEXT),
@@ -197,6 +202,7 @@ def build_messages(
     context: str | None = None,
     review: str | None = None,
     version: str | None = None,
+    max_hunk_chars: int = MAX_HUNK_CHARS,
 ) -> list[dict[str, str]]:
     """Chat messages for `tokenizer.apply_chat_template`.
 
@@ -207,7 +213,8 @@ def build_messages(
     pv = _resolve(version)
     messages = [
         {"role": "system", "content": pv.system},
-        {"role": "user", "content": build_user_message(diff, language, context, pv.name)},
+        {"role": "user", "content": build_user_message(diff, language, context, pv.name,
+                                                       max_hunk_chars)},
     ]
     if review is not None:
         messages.append({"role": "assistant", "content": review.strip()})

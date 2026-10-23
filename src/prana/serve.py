@@ -37,7 +37,7 @@ from pathlib import Path
 from prana.compat import dtype_kwarg, load_tokenizer
 from prana.data.deframe import deframe
 from prana.eval.generate import clean_completion
-from prana.prompts import PROMPT_VERSION, assert_contract, build_messages, fingerprint
+from prana.prompts import PROMPT_VERSION, assert_contract, fingerprint
 from prana.schema import parse_structured, render_structured
 
 BASE_MODEL = "deepseek-ai/deepseek-coder-6.7b-instruct"
@@ -164,9 +164,11 @@ class Reviewer:
         if not diff_hunk or not diff_hunk.strip():
             raise ValueError("diff_hunk is empty")
 
-        messages = build_messages(diff_hunk, lang, context, version=self.prompt_version)
-        prompt = self.tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True)
+        # Same budgeted rendering as evaluation, so served prompts never get
+        # their tail truncated for a long hunk.
+        from prana.eval.generate import render_within_budget
+        prompt = render_within_budget(self.tokenizer, diff_hunk, lang, context,
+                                      self.prompt_version)
         enc = self.tokenizer(prompt, return_tensors="pt", truncation=True,
                              max_length=2048).to(self.model.device)
 

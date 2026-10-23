@@ -28,7 +28,13 @@ from pathlib import Path
 
 from prana.compat import dtype_kwarg, load_tokenizer
 from prana.data import jsonl
-from prana.prompts import PROMPT_VERSION, assert_contract, build_messages, fingerprint
+from prana.prompts import (
+    MAX_HUNK_CHARS,
+    PROMPT_VERSION,
+    assert_contract,
+    build_messages,
+    fingerprint,
+)
 
 
 def pending(rows: list[dict], done_ids: set[str]) -> list[dict]:
@@ -83,29 +89,48 @@ def adapter_prompt_version(adapter: str | None) -> str:
     return assert_contract(expected)
 
 
+# Input budget: the model was trained at 2,048 tokens for prompt AND response.
+# Leaving 256 for the answer keeps the prompt inside the distribution it saw.
+PROMPT_TOKEN_BUDGET = 2048 - 256
+_HUNK_CAPS = (MAX_HUNK_CHARS, 2400, 1600, 1000, 600)
+
+
+def render_within_budget(tokenizer, diff: str, language: str, context: str | None,
+                         version: str | None = None,
+                         budget: int = PROMPT_TOKEN_BUDGET) -> str:
+    """Render the prompt and shrink the hunk until it fits the token budget.
+
+    The character cap in `prana.prompts` is a guess at tokens; this is the
+    measurement. A prompt that is still too long after the smallest cap is
+    returned as is - truncation then cuts the hunk, never the template tail,
+    because the hunk is already tiny.
+    """
+    has_template = getattr(tokenizer, "chat_template", None) is not None
+    text = ""
+    for cap in _HUNK_CAPS:
+        messages = build_messages(diff=diff, language=language, context=context,
+                                  version=version, max_hunk_chars=cap)
+        text = (tokenizer.apply_chat_template(messages, tokenize=False,
+                                              add_generation_prompt=True)
+                if has_template else _plain_text(messages))
+        if len(tokenizer(text, add_special_tokens=False)["input_ids"]) <= budget:
+            break
+    return text
+
+
 def render_prompts(tokenizer, rows: list[dict], with_context: bool,
                    version: str | None = None) -> list[str]:
     """Render through the shared contract, then through the model's own chat
     template. We never hand-write the special tokens: the tokenizer owns its
     chat format, and hard-coding it silently breaks when the base model changes.
     """
-    has_template = getattr(tokenizer, "chat_template", None) is not None
-    out = []
-    for row in rows:
-        messages = build_messages(
-            diff=row["diff_hunk"],
-            language=row["language"],
-            context=row.get("rag_context") if with_context else None,
-            version=version,
+    return [
+        render_within_budget(
+            tokenizer, row["diff_hunk"], row["language"],
+            row.get("rag_context") if with_context else None, version,
         )
-        out.append(
-            tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            if has_template
-            else _plain_text(messages)
-        )
-    return out
+        for row in rows
+    ]
 
 
 def main() -> None:
