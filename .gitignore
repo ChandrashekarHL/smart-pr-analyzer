@@ -30,3 +30,4 @@ Thumbs.db
 
 # API keys live here, never in the repo or in chat
 .secrets/
+handoff/

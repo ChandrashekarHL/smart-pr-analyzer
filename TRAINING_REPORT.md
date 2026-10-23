@@ -74,7 +74,9 @@ Most invalid v1.0/v1.1 outputs (35 of 41 for v1.1) were prompts longer than the 
 window, truncated from the right so the model never saw "Review this hunk." and continued the
 diff. A 6,000-character cap was too loose (code tokenises at ~2 chars/token). The fix renders
 with the real tokenizer and shrinks the hunk until the prompt fits 1,792 tokens; it applies to
-evaluation and serving. Final validity numbers: _r3 pending_.
+evaluation and serving. Re-measured on the same 1,190 rows (r3): valid JSON rose to **99.5%**
+for both v1.0 (from 98.7%) and v1.1 (from 96.5%). The validity gap between the two models was
+entirely this bug. Final v1.1: severity macro-F1 0.352, issue type 34.5%, line exact 14.7%.
 
 ## Reproducing
 

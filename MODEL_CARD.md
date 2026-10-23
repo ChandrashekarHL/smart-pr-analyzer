@@ -17,7 +17,7 @@ Structured code-review comments for a single diff hunk. Given one hunk, its lang
 | Training | 3 epochs, 633 steps, effective batch 32, LR 1e-4 cosine, seq 2,048, packed, completion-only loss; 12.5 h on one GB10 (DGX Spark) |
 | Prompt contract | `v2` (fingerprint in `adapter/prana_contract.json`); serving refuses a mismatched build |
 | Artifact | `runs/v1.1/adapter` (LoRA weights + contract + tokenizer) |
-| Serving | `prana.serve`, 4-bit, **~3–5 s per review** on the GB10, no retrieval context |
+| Serving | `prana.api` over Tailscale (`http://100.124.121.97:8100`, API key), 4-bit, **~3–5 s per review** on the GB10, no retrieval context |
 
 ## Intended use
 
@@ -38,14 +38,14 @@ every row — an unparseable output counts as wrong, not missing.
 
 | Metric | v1.0 | **v1.1** | Baseline |
 |---|---|---|---|
-| Valid JSON / schema | 98.7% | _r3 pending_ (96.5% before the prompt-budget fix) | — |
-| Severity accuracy | 49.9% | 45.6% | majority class 49.4% |
-| Severity macro-F1 | 0.270 | **0.345** | — |
+| Valid JSON / schema | 99.5% [99.1, 99.8] | **99.5%** [99.1, 99.8] | — |
+| Severity accuracy | 50.6% [47.7, 53.5] | 47.0% [44.0, 49.9] | majority class 49.4% |
+| Severity macro-F1 | 0.270 | **0.352** | — |
 | Predicted severity mix (info/warning/critical) | 93 / 7 / **0** | 70 / 23 / 7 | truth 49 / 37 / 14 |
-| Issue-type accuracy | 35.4% | 32.9% | majority class 28.0% |
-| Issue-type macro-F1 | 0.296 | 0.287 | — |
-| Line number exact (where reference has one, n=544) | 0.7% | **14.0%** (MAE 2.9) | — |
-| Explanation ROUGE-L / BERTScore | 0.177 / 0.854 | 0.170 / 0.857 | — |
+| Issue-type accuracy | 35.4% [32.8, 38.2] | 34.5% [31.9, 37.3] | majority class 28.0% |
+| Issue-type macro-F1 | 0.293 | 0.289 | — |
+| Line number exact (where reference has one, n=544) | 0.7% | **14.7%** [11.9, 17.6] (MAE 3.2) | — |
+| Explanation ROUGE-L / BERTScore | 0.178 / 0.854 | 0.169 / 0.856 | — |
 | Self-consistency: severity matches the teacher's reading of the model's *own* text | — | **82.4%** (99.9% within one level) | — |
 
 How to read it:
