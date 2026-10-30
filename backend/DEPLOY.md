@@ -74,7 +74,7 @@ Settings → Developer settings → GitHub Apps → New GitHub App.
 | Webhook secret | `openssl rand -hex 32` - keep it for step 3 |
 | Repository permissions | Pull requests: **Read and write** · Contents: **Read** · Metadata: **Read** |
 | Subscribe to events | **Pull request** |
-| Where can it be installed | Only on this account (until the demo is public) |
+| Where can it be installed | **Any account** (public); who actually gets reviews is set by `ALLOWED_OWNERS` in `.env` |
 
 After creating it: note the **App ID**, then "Generate a private key" (a
 `.pem` downloads). Install the App on the demo repository.

@@ -32,7 +32,10 @@ MAX_BODY_BYTES = 25 * 1024 * 1024        # GitHub caps payloads at 25 MB
 
 
 def create_app(webhook_secret: str, store: Store, enqueue: Callable[[int], None],
-               dashboard_token: str = "") -> FastAPI:
+               dashboard_token: str = "",
+               allowed_owners: frozenset[str] = frozenset()) -> FastAPI:
+    """`allowed_owners`: lower-case GitHub logins whose repositories are
+    reviewed; empty means every installation is served."""
     app = FastAPI(title="prana reviewer", version="0.1.0", docs_url=None, redoc_url=None)
 
     def check_dashboard(authorization: str | None) -> None:
@@ -85,6 +88,11 @@ def create_app(webhook_secret: str, store: Store, enqueue: Callable[[int], None]
         number = pr.get("number")
         if not (inst and repo and sha and number):
             return {"result": "incomplete payload"}
+        owner = repo.split("/", 1)[0].lower()
+        if allowed_owners and owner not in allowed_owners:
+            # Installed by someone outside the allowlist: acknowledge, never
+            # spend the shared GPU on it.
+            return {"result": "owner not allowed"}
         run_id = await run_in_threadpool(store.open_run, int(inst), repo, int(number), sha)
         if run_id is None:
             return {"result": "already reviewed or queued"}
@@ -126,7 +134,8 @@ def _from_env() -> FastAPI:
     svc = services()
     token_file = os.environ.get("DASHBOARD_TOKEN_FILE")
     token = Path(token_file).read_text(encoding="utf-8").strip() if token_file else ""
-    return create_app(svc.settings.webhook_secret, svc.store, enqueue, token)
+    return create_app(svc.settings.webhook_secret, svc.store, enqueue, token,
+                      svc.settings.allowed_owners)
 
 
 def __getattr__(name: str):

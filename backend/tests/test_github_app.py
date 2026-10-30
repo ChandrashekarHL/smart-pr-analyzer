@@ -149,3 +149,29 @@ def test_health_and_dashboard_auth(web):
     assert client.get("/api/stats").status_code == 401
     r = client.get("/api/stats", headers={"Authorization": "Bearer dash-token"})
     assert r.status_code == 200 and "runs_by_status" in r.json()
+
+
+def test_allowlist_ignores_other_owners_case_insensitively(tmp_path):
+    from prana_app.config import parse_owners
+    assert parse_owners(" ChandrashekarHL, demo-org ,,") == {"chandrashekarhl", "demo-org"}
+    assert parse_owners("") == frozenset()
+
+    store = Store(f"sqlite:///{tmp_path / 'db.sqlite'}")
+    store.create_all()
+    queued = []
+    client = TestClient(create_app(SECRET, store, queued.append,
+                                   allowed_owners=parse_owners("o")))
+    stranger = _pr_payload()
+    stranger["repository"]["full_name"] = "stranger/repo"
+    r = _post(client, stranger, delivery="x1")
+    assert r.status_code == 200 and r.json()["result"] == "owner not allowed" and queued == []
+    shouty = _pr_payload()
+    shouty["repository"]["full_name"] = "O/r"                       # same owner, any case
+    assert _post(client, shouty, delivery="x2").status_code == 202 and len(queued) == 1
+
+
+def test_empty_allowlist_serves_everyone(web):
+    client, queued, _ = web                                         # created without a list
+    p = _pr_payload()
+    p["repository"]["full_name"] = "anyone/repo"
+    assert _post(client, p, delivery="y1").status_code == 202 and len(queued) == 1

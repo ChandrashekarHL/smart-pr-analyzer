@@ -59,6 +59,10 @@ class Settings:
     rag_enabled: bool = False       # switched on only when the test_ood result wins
     bot_login: str = "prana-reviewer[bot]"
     github_api: str = "https://api.github.com"
+    # The App can be installed by any account; only these owners (users or
+    # orgs, lower case) get reviews. Empty = everyone. The GPU is shared, so
+    # production should list the team's accounts.
+    allowed_owners: frozenset[str] = frozenset()
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -81,4 +85,10 @@ class Settings:
             rag_enabled=os.environ.get("RAG_ENABLED", "0") == "1",
             bot_login=os.environ.get("BOT_LOGIN", "prana-reviewer[bot]"),
             github_api=os.environ.get("GITHUB_API", "https://api.github.com").rstrip("/"),
+            allowed_owners=parse_owners(os.environ.get("ALLOWED_OWNERS", "")),
         )
+
+
+def parse_owners(value: str) -> frozenset[str]:
+    """"alice, Org-B" -> {"alice", "org-b"}; GitHub logins are case-insensitive."""
+    return frozenset(x.strip().lower() for x in value.split(",") if x.strip())
