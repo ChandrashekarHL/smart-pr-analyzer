@@ -8,6 +8,9 @@
 }
 
 :8080 {
+	# "https://host/" + "/dashboard" gives "//dashboard", which Streamlit
+	# answers with 400: collapse repeated leading slashes first.
+	uri path_regexp ^/+ /
 	encode gzip
 	request_body {
 		max_size 25MB
@@ -16,11 +19,16 @@
 	handle @public {
 		reverse_proxy api:8000
 	}
-	handle /dashboard* {
+	# Relative redirect, so it keeps https behind Funnel (Streamlit's own
+	# redirect would point at http://).
+	redir /dashboard /dashboard/ 308
+	handle /dashboard/* {
 		basic_auth {
 			{$DASHBOARD_USER} {$DASHBOARD_PASSWORD_HASH}
 		}
-		reverse_proxy dashboard:8501
+		reverse_proxy dashboard:8501 {
+			header_up X-Forwarded-Proto https
+		}
 	}
 	handle {
 		respond "not found" 404
