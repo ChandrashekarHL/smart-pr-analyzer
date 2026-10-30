@@ -13,7 +13,7 @@ Structured code-review comments for a single diff hunk. Given one hunk, its lang
 |---|---|
 | Base model | `deepseek-ai/deepseek-coder-6.7b-instruct` |
 | Method | QLoRA, 4-bit NF4, r=16 α=32 dropout 0.05, all attention + MLP projections (40.0 M trainable, 0.59% of 6.74 B; PEFT prints 1.13% because it counts 4-bit weights packed two per byte) |
-| Training data | 12,483 human review comments from 211 public repositories, teacher-structured (see dataset card) |
+| Training data | 12,483 human review comments from 208 public repositories, teacher-structured (see dataset card) |
 | Training | 3 epochs, 633 steps, effective batch 32, LR 1e-4 cosine, seq 2,048, packed, completion-only loss; 12.5 h on one GB10 (DGX Spark) |
 | Prompt contract | `v2` (fingerprint in `adapter/prana_contract.json`); serving refuses a mismatched build |
 | Artifact | `runs/v1.1/adapter` (LoRA weights + contract + tokenizer) |
@@ -32,7 +32,7 @@ summaries.
 
 ## Evaluation
 
-All numbers on `test_ood`: **1,190 reviews from 277 repositories that never appear in
+All numbers on `test_ood`: **1,190 reviews from 234 repositories that never appear in
 training**, after n-gram decontamination. 95% bootstrap CIs. Categorical fields are scored on
 every row — an unparseable output counts as wrong, not missing.
 
