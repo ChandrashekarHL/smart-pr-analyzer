@@ -1,0 +1,5 @@
+# Dashboard image only (the API and worker do not need these).
+# Pinned to the versions the dashboard tests ran with (2026-10-30).
+streamlit==1.66.1
+altair==6.3.0
+pandas==3.1.0

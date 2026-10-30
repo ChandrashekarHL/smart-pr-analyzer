@@ -1,0 +1,119 @@
+# Production stack for the GitHub App backend (design doc Module 4).
+#
+#   cd backend && docker compose up -d --build
+#
+# Secrets are files in ./secrets (never committed; see .env.example and
+# DEPLOY.md). The model API is reached over Tailscale from the host.
+name: prana
+
+x-app: &app
+  build: {context: .., dockerfile: backend/Dockerfile}
+  image: prana-app:0.1.0
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    GITHUB_PRIVATE_KEY_FILE: /run/secrets/github_private_key
+    GITHUB_WEBHOOK_SECRET_FILE: /run/secrets/github_webhook_secret
+    MODEL_API_KEY_FILE: /run/secrets/model_api_key
+    DATABASE_URL_FILE: /run/secrets/database_url
+    DASHBOARD_TOKEN_FILE: /run/secrets/dashboard_token
+    REDIS_URL: redis://redis:6379/0
+  secrets: [github_private_key, github_webhook_secret, model_api_key, database_url,
+            dashboard_token]
+  depends_on:
+    postgres: {condition: service_healthy}
+    redis: {condition: service_healthy}
+  volumes: [repo-cache:/var/cache/prana]
+  logging: {driver: json-file, options: {max-size: "10m", max-file: "5"}}
+
+services:
+  api:
+    <<: *app
+    expose: ["8000"]
+
+  worker:
+    <<: *app
+    command: ["celery", "-A", "prana_app.tasks", "worker", "--loglevel=INFO",
+              "--concurrency=2", "--max-tasks-per-child=200"]
+    healthcheck:
+      test: ["CMD", "celery", "-A", "prana_app.tasks", "inspect", "ping", "--timeout", "5"]
+      interval: 60s
+      timeout: 15s
+      retries: 3
+
+  # Periodic jobs (feedback refresh every 15 min). Exactly one beat per deployment.
+  beat:
+    <<: *app
+    command: ["celery", "-A", "prana_app.tasks", "beat", "--loglevel=INFO",
+              "--schedule=/tmp/celerybeat-schedule"]
+    # Not an HTTP server: the image's /health check does not apply. The
+    # schedule file is written once beat is running.
+    healthcheck:
+      test: ["CMD", "test", "-s", "/tmp/celerybeat-schedule"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+
+  dashboard:
+    build: {context: .., dockerfile: backend/dashboard/Dockerfile}
+    image: prana-dashboard:0.1.0
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DASHBOARD_API_URL: http://api:8000
+      DASHBOARD_TOKEN_FILE: /run/secrets/dashboard_token
+    secrets: [dashboard_token]
+    expose: ["8501"]
+    depends_on: [api]
+    logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}
+
+  postgres:
+    image: postgres:16.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: prana
+      POSTGRES_USER: prana
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets: [postgres_password]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U prana -d prana"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    # Append-only file: queued reviews survive a restart.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  caddy:
+    image: caddy:2.8-alpine
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddydata:/data
+    depends_on: [api]
+
+secrets:
+  github_private_key: {file: ./secrets/github_private_key.pem}
+  github_webhook_secret: {file: ./secrets/github_webhook_secret}
+  model_api_key: {file: ./secrets/model_api_key}
+  database_url: {file: ./secrets/database_url}
+  dashboard_token: {file: ./secrets/dashboard_token}
+  postgres_password: {file: ./secrets/postgres_password}
+
+volumes:
+  pgdata:
+  redisdata:
+  caddydata:
+  repo-cache:

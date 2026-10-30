@@ -1,0 +1,14 @@
+# Optional dependencies for the RAG index (prana.rag.embed): the semantic
+# "similar code" and "conventions" sources of prana.rag.contract.
+# Everything else in prana.rag is standard library only.
+#
+# CPU-only torch keeps the backend worker image small and GPU-free:
+#   pip install --index-url https://download.pytorch.org/whl/cpu torch==2.15.0
+#   pip install -r requirements-rag.txt
+#
+# Pinned to the versions the evaluation ran with (DGX Spark, aarch64, 2026-10-30).
+torch==2.15.0
+sentence-transformers==6.2.0
+chromadb==1.5.9
+transformers==5.22.0
+numpy==2.5.4

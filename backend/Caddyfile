@@ -1,0 +1,35 @@
+# HTTPS in front of the stack. Caddy obtains and renews the certificate for
+# $PUBLIC_HOST automatically.
+#   /webhook, /health      public (the webhook is HMAC-verified by the app)
+#   /dashboard*            basic auth (DASHBOARD_USER / DASHBOARD_PASSWORD_HASH,
+#                          hash made with: docker compose run --rm caddy caddy hash-password)
+# The JSON API (/api/*) is not published: the dashboard reads it on the
+# internal network.
+{$PUBLIC_HOST} {
+	encode gzip
+	request_body {
+		max_size 25MB
+	}
+	@public path /webhook /health
+	handle @public {
+		reverse_proxy api:8000
+	}
+	handle /dashboard* {
+		basic_auth {
+			{$DASHBOARD_USER} {$DASHBOARD_PASSWORD_HASH}
+		}
+		reverse_proxy dashboard:8501
+	}
+	handle {
+		respond "not found" 404
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+}

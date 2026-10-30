@@ -1,0 +1,9 @@
+# Build context is the repository root; keep it small and secret-free.
+**
+!backend/requirements.txt
+!backend/src/**
+!backend/dashboard/requirements.txt
+!backend/dashboard/app.py
+!backend/dashboard/data.py
+!src/prana/**
+**/__pycache__

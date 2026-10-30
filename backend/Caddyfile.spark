@@ -1,0 +1,37 @@
+# Spark deployment: Tailscale Funnel terminates HTTPS and forwards to this
+# plain-HTTP listener on localhost. Same routes as the cloud Caddyfile:
+#   /webhook, /health   public (the webhook is HMAC-verified by the app)
+#   /dashboard*         basic auth
+#   everything else     404 (the JSON API stays internal)
+{
+	auto_https off
+}
+
+:8080 {
+	encode gzip
+	request_body {
+		max_size 25MB
+	}
+	@public path /webhook /health
+	handle @public {
+		reverse_proxy api:8000
+	}
+	handle /dashboard* {
+		basic_auth {
+			{$DASHBOARD_USER} {$DASHBOARD_PASSWORD_HASH}
+		}
+		reverse_proxy dashboard:8501
+	}
+	handle {
+		respond "not found" 404
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		-Server
+	}
+	log {
+		output stdout
+		format json
+	}
+}

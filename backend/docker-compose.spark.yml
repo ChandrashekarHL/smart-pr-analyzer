@@ -1,0 +1,14 @@
+# Run the stack on the DGX Spark instead of a cloud VM (no cloud bill).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.spark.yml up -d --build
+#   tailscale funnel --bg 8080      # https://<spark>.<tailnet>.ts.net -> localhost:8080
+#
+# Differences from the cloud layout: Caddy listens on localhost:8080 over
+# plain HTTP (Funnel provides the public HTTPS endpoint and certificate), and
+# nothing is bound to the campus LAN. See DEPLOY.md, "Option A".
+services:
+  caddy:
+    ports: !override ["127.0.0.1:8080:8080"]
+    volumes: !override
+      - ./Caddyfile.spark:/etc/caddy/Caddyfile:ro
+      - caddydata:/data

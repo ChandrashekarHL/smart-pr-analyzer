@@ -31,3 +31,7 @@ Thumbs.db
 # API keys live here, never in the repo or in chat
 .secrets/
 handoff/
+# Repository checkouts for code retrieval (prana.rag.checkout)
+/cache/
+# Teammate submission (contains internal data) - audited, never published
+prana_rag_handover_submission.zip
