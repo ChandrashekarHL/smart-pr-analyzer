@@ -10,12 +10,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
-from conftest import FakeGitHub
+from conftest import FakeGitHub, make_store
 
 from prana_app.feedback import reactions_from, refresh
 from prana_app.pipeline import Outcome
 from prana_app.review import Finding
-from prana_app.store import Store, percentile
+from prana_app.store import percentile
 
 DASH = Path(__file__).resolve().parents[1] / "dashboard"
 sys.path.insert(0, str(DASH))
@@ -31,8 +31,7 @@ def _finding(sev, issue, conf, line=10, text="Check the return value."):
 
 @pytest.fixture
 def seeded(tmp_path):
-    store = Store(f"sqlite:///{tmp_path / 'db.sqlite'}")
-    store.create_all()
+    store = make_store(tmp_path, 'db.sqlite')
     r1 = store.open_run(1, "o/r", 1, "a1")
     store.finish(r1, Outcome("posted", hunks_total=3, hunks_reviewed=3, seconds=8.0,
                              posted=[_finding("critical", "SECURITY", 0.91, 10),
@@ -201,8 +200,7 @@ def test_page_shows_an_error_when_the_backend_is_down(monkeypatch, tmp_path):
 
 def test_page_empty_state(monkeypatch, tmp_path):
     pytest.importorskip("streamlit")
-    empty = Store(f"sqlite:///{tmp_path / 'e.sqlite'}")
-    empty.create_all()
+    empty = make_store(tmp_path, 'e.sqlite')
     api = _Api(empty.dashboard())
     try:
         at = _run_page(monkeypatch, tmp_path, api.url)

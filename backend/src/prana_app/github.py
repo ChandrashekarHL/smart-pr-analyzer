@@ -75,6 +75,12 @@ class GitHubApp:
         return GitHubClient(lambda: self.installation_token(installation_id), self.api,
                             self._transport)
 
+    def installations(self) -> list[dict]:
+        """Every installation of this App (authenticated as the App itself)."""
+        app_client = GitHubClient(lambda: app_jwt(self.app_id, self._key, self._clock()),
+                                  self.api, self._transport)
+        return app_client._paginate("/app/installations")
+
 
 def _parse_time(s: str | None) -> float | None:
     if not s:
@@ -128,11 +134,12 @@ class GitHubClient:
             return r
         raise GitHubError(0, "unreachable")
 
-    def _paginate(self, path: str, limit: int = 3000) -> list[dict]:
+    def _paginate(self, path: str, limit: int = 3000, params: dict | None = None) -> list[dict]:
         out: list[dict] = []
         page = 1
         while len(out) < limit:
-            batch = self._request("GET", path, params={"per_page": 100, "page": page}).json()
+            batch = self._request("GET", path,
+                                  params={**(params or {}), "per_page": 100, "page": page}).json()
             out.extend(batch)
             if len(batch) < 100:
                 break
@@ -147,6 +154,26 @@ class GitHubClient:
 
     def review_comments(self, repo: str, number: int) -> list[dict]:
         return self._paginate(f"/repos/{repo}/pulls/{number}/comments")
+
+    def reviews(self, repo: str, number: int) -> list[dict]:
+        return self._paginate(f"/repos/{repo}/pulls/{number}/reviews")
+
+    def installation_repos(self, limit: int = 1000) -> list[dict]:
+        """Repositories this installation can see (the response wraps the list)."""
+        out: list[dict] = []
+        page = 1
+        while len(out) < limit:
+            body = self._request("GET", "/installation/repositories",
+                                 params={"per_page": 100, "page": page}).json()
+            batch = body.get("repositories") or []
+            out.extend(batch)
+            if len(batch) < 100:
+                break
+            page += 1
+        return out[:limit]
+
+    def open_pulls(self, repo: str) -> list[dict]:
+        return self._paginate(f"/repos/{repo}/pulls", params={"state": "open"})
 
     def create_review(self, repo: str, number: int, commit_id: str, body: str,
                       comments: list[dict]) -> dict:

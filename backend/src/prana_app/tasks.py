@@ -67,7 +67,20 @@ def run_review(svc, run_id: int, attempt: int) -> str:
             log.error("could not post failure comment on %s#%s: %s", run.repo,
                       run.pr_number, e2)
         return "failed"
-    svc.store.finish(run_id, outcome)
+    # The review is on GitHub now. Nothing after this point may raise into the
+    # retry path: a retry would post the same review again (2026-10-30: a DB
+    # error here posted four copies). Record the failure instead.
+    try:
+        svc.store.finish(run_id, outcome)
+    except Exception as e:  # noqa: BLE001 - see above
+        log.error("run %s posted review %s but could not be recorded: %s", run_id,
+                  outcome.review_id, e)
+        try:
+            svc.store.mark(run_id, "failed",
+                           error=f"posted review {outcome.review_id}, not recorded: {e}")
+        except Exception:  # noqa: BLE001, S110 - the database itself is down; logged above
+            pass
+        return "posted_unrecorded"
     log.info("run %s %s#%s %s: %d comments, %d/%d hunks, %.1f s", run_id, run.repo,
              run.pr_number, outcome.status, len(outcome.posted), outcome.hunks_reviewed,
              outcome.hunks_total, outcome.seconds)
@@ -79,7 +92,9 @@ def review_task(self, run_id: int) -> str:
     from prana_app.services import services
     try:
         return run_review(services(), run_id, self.request.retries)
-    except Exception as e:  # noqa: BLE001 - run_review only re-raises transient errors
+    except Exception as e:  # noqa: BLE001 - only transient errors are retried
+        if not _transient(e):
+            raise                       # a bug: fail loudly, never repeat side effects
         raise self.retry(exc=e, countdown=30 * 2 ** self.request.retries) from e
 
 
@@ -88,9 +103,23 @@ def enqueue(run_id: int) -> None:
 
 
 FEEDBACK_EVERY_S = 15 * 60
+RECONCILE_EVERY_S = 2 * 60
 celery.conf.beat_schedule = {
     "refresh-feedback": {"task": "prana_app.refresh_feedback", "schedule": FEEDBACK_EVERY_S},
+    "reconcile-open-prs": {"task": "prana_app.reconcile", "schedule": RECONCILE_EVERY_S,
+                           "options": {"expires": RECONCILE_EVERY_S}},
 }
+
+
+@celery.task(name="prana_app.reconcile")
+def reconcile_task() -> dict:
+    from prana_app.reconcile import sweep
+    from prana_app.services import services
+    svc = services()
+    result = sweep(svc.app, svc.store, enqueue, svc.settings.allowed_owners)
+    if result["queued"] or result["errors"]:
+        log.info("reconcile: %s", result)
+    return result
 
 
 @celery.task(name="prana_app.refresh_feedback")

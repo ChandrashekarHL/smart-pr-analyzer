@@ -47,7 +47,7 @@ class Policy:
 
 @dataclass
 class Outcome:
-    status: str                       # posted | no_hunks | superseded | posted_summary_only
+    status: str     # posted | posted_summary_only | no_hunks | superseded | already_posted
     hunks_total: int = 0
     hunks_reviewed: int = 0
     hunks_failed: int = 0
@@ -66,6 +66,12 @@ def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: i
     pr = gh.pull_request(repo, number)
     if pr.get("head", {}).get("sha") != head_sha:
         return Outcome("superseded", seconds=clock() - started)
+    # Idempotent at the source of truth: if our bot already reviewed this exact
+    # commit (a crash after posting, a redelivered job), never post it again.
+    for r in gh.reviews(repo, number):
+        if r.get("commit_id") == head_sha and (r.get("user") or {}).get("login") == \
+                policy.bot_login:
+            return Outcome("already_posted", review_id=r.get("id"), seconds=clock() - started)
     base_sha = pr.get("base", {}).get("sha", "")
 
     hunks, total = reviewable_hunks(gh.pull_files(repo, number), policy.max_hunks)

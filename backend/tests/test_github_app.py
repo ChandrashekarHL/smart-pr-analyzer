@@ -6,12 +6,12 @@ import time
 import httpx
 import jwt
 import pytest
+from conftest import make_store
 from fastapi.testclient import TestClient
 
 from prana_app.app import create_app
 from prana_app.github import GitHubApp, GitHubClient, GitHubError, app_jwt
 from prana_app.security import sign
-from prana_app.store import Store
 
 SECRET = "whsec_test"
 
@@ -91,8 +91,7 @@ def test_create_review_sends_one_review_with_inline_comments():
 
 @pytest.fixture
 def web(tmp_path):
-    store = Store(f"sqlite:///{tmp_path / 'db.sqlite'}")
-    store.create_all()
+    store = make_store(tmp_path, 'db.sqlite')
     queued = []
     app = create_app(SECRET, store, queued.append, dashboard_token="dash-token")
     return TestClient(app), queued, store
@@ -156,8 +155,7 @@ def test_allowlist_ignores_other_owners_case_insensitively(tmp_path):
     assert parse_owners(" ChandrashekarHL, demo-org ,,") == {"chandrashekarhl", "demo-org"}
     assert parse_owners("") == frozenset()
 
-    store = Store(f"sqlite:///{tmp_path / 'db.sqlite'}")
-    store.create_all()
+    store = make_store(tmp_path, 'db.sqlite')
     queued = []
     client = TestClient(create_app(SECRET, store, queued.append,
                                    allowed_owners=parse_owners("o")))

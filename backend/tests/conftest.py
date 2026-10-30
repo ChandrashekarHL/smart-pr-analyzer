@@ -28,6 +28,23 @@ def rsa_key():
     return pem, pub
 
 
+def make_store(tmp_path, name: str = "db.sqlite"):
+    """A fresh, empty store. SQLite by default; set PRANA_TEST_DATABASE_URL to a
+    throwaway Postgres to run every store-backed test against the production
+    engine (SQLite has no 32-bit INTEGER limit, so it hid a real overflow)."""
+    import os
+
+    from prana_app.store import Base, Store
+    url = os.environ.get("PRANA_TEST_DATABASE_URL")
+    if url:
+        s = Store(url)
+        Base.metadata.drop_all(s.engine)
+    else:
+        s = Store(f"sqlite:///{tmp_path / name}")
+    s.create_all()
+    return s
+
+
 class FakeGitHub:
     def __init__(self, head="h1", files=None, existing=None, reject_inline=False):
         self.head = head
@@ -37,7 +54,7 @@ class FakeGitHub:
         ]
         self.existing = existing or []
         self.reject_inline = reject_inline
-        self.reviews = []
+        self.posted = []          # reviews created through create_review
         self.issue_comments = []
 
     def pull_request(self, repo, number):
@@ -53,8 +70,12 @@ class FakeGitHub:
         from prana_app.github import GitHubError
         if self.reject_inline and comments:
             raise GitHubError(422, "Unprocessable: line not part of the diff")
-        self.reviews.append({"commit_id": commit_id, "body": body, "comments": comments})
-        return {"id": 99}
+        self.posted.append({"id": 99 + len(self.posted), "commit_id": commit_id, "body": body,
+                            "comments": comments, "user": {"login": "prana-reviewer[bot]"}})
+        return {"id": self.posted[-1]["id"]}
+
+    def reviews(self, repo, number):
+        return self.posted
 
     def issue_comment(self, repo, number, body):
         self.issue_comments.append(body)

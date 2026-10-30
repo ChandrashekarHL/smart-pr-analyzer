@@ -44,7 +44,9 @@ class ReviewRun(Base):
     __tablename__ = "review_runs"
     __table_args__ = (UniqueConstraint("repo", "pr_number", "head_sha"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    installation_id: Mapped[int] = mapped_column(Integer)
+    # GitHub ids passed 2**31 (review ids ~5.7e9 on 2026-10-30): every GitHub
+    # id column is 64-bit. Postgres INTEGER overflowed in production.
+    installation_id: Mapped[int] = mapped_column(BigInteger)
     repo: Mapped[str] = mapped_column(String(200), index=True)
     pr_number: Mapped[int] = mapped_column(Integer)
     head_sha: Mapped[str] = mapped_column(String(40))
@@ -57,7 +59,7 @@ class ReviewRun(Base):
     hunks_reviewed: Mapped[int] = mapped_column(Integer, default=0)
     hunks_failed: Mapped[int] = mapped_column(Integer, default=0)
     duplicates: Mapped[int] = mapped_column(Integer, default=0)
-    review_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    review_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
@@ -103,15 +105,17 @@ class Store:
                 s.rollback()
                 return False
 
-    def open_run(self, installation_id: int, repo: str, pr: int, head_sha: str) -> int | None:
+    def open_run(self, installation_id: int, repo: str, pr: int, head_sha: str,
+                 reopen_failed: bool = True) -> int | None:
         """A run id to enqueue, or None when this exact head is already queued,
-        running or done. A failed run is reopened."""
+        running or done. A failed run is reopened, unless `reopen_failed` is
+        False (the periodic sweep must not retry a failing PR forever)."""
         with self.session() as s:
             existing = s.scalar(select(ReviewRun).where(
                 ReviewRun.repo == repo, ReviewRun.pr_number == pr,
                 ReviewRun.head_sha == head_sha))
             if existing is not None:
-                if existing.status != "failed":
+                if existing.status != "failed" or not reopen_failed:
                     return None
                 existing.status, existing.error = "pending", None
                 s.commit()

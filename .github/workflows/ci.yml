@@ -34,6 +34,15 @@ jobs:
     name: backend + dashboard lint and tests
     runs-on: ubuntu-latest
     defaults: {run: {working-directory: backend}}
+    # Store tests run on Postgres, the production engine: SQLite has no
+    # 32-bit INTEGER limit and hid a real overflow (2026-10-30).
+    services:
+      postgres:
+        image: postgres:16.4-alpine
+        env: {POSTGRES_PASSWORD: ci}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-retries 10
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -41,7 +50,9 @@ jobs:
       - run: pip install -r requirements.txt -r dashboard/requirements.txt pytest==9.2.0 ruff==0.17.3
       - run: ruff check src tests dashboard
       - run: python -m pytest -p no:warnings
-        env: {PYTHONPATH: "src:../src:tests"}
+        env:
+          PYTHONPATH: "src:../src:tests"
+          PRANA_TEST_DATABASE_URL: postgresql+psycopg://postgres:ci@localhost:5432/postgres
 
   image:
     name: backend image
