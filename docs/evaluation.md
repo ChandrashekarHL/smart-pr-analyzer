@@ -7,10 +7,18 @@ time a metric is added.
 ```bash
 # generate on the held-out repositories (GPU, on the DGX Spark)
 python -m prana.eval.generate --model deepseek-ai/deepseek-coder-6.7b-instruct \
-    --adapter runs/v1.1/adapter --data data/v1.1 --split test_ood --out runs/v1.1/eval
+    --adapter runs/v1.3/adapter --data data/v1.1 --split test_ood --out runs/v1.3/eval
 
 # score each field with the metric that fits it
-python -m prana.eval.structured --predictions runs/v1.1/eval/test_ood.predictions.jsonl
+python -m prana.eval.structured --predictions runs/v1.3/eval/test_ood.predictions.jsonl
+
+# issue detection on real reviews: did the model raise the human's issue? (LLM judge)
+python -m prana.eval.judge --predictions runs/v1.3/eval/test_ood.predictions.jsonl \
+    --data data/v1.1/test_ood.jsonl --out runs/v1.3/judge-test_ood
+
+# planted bugs (40 buggy/correct pairs) and vulnerabilities (33 pairs), through the API
+python -m prana.eval.bench --key-file api.key --out runs/v1.3/bench-v1
+PATH=<venv>/bin:$PATH python -m prana_app.security_eval --key-file api.key --out runs/security/v1.3
 
 # compare two systems on the same rows (paired bootstrap)
 python -m prana.eval.paired --a runs/a/test_ood.predictions.jsonl --b runs/b/test_ood.predictions.jsonl
@@ -48,6 +56,20 @@ python -m prana.client eval --data data/test_ood.jsonl --out runs/try1 --key-fil
 - **Self-consistency** complements the human reference: the teacher re-labels
   the model's *own* explanation, and we measure whether the model's severity and
   issue type agree with its own text (82.4% and 84.7% for v1.1).
+- **Detection rates need a definition.** Three are measured, all judged by
+  `gemini-3.8-flash` at temperature 0:
+
+  | Measure | Definition | v1.1 | v1.3 |
+  |---|---|---|---|
+  | Issue detection, real reviews | judge says the model raised the human's issue (strict / lenient), 1,190 test_ood rows | 4.0% / 12.9% | 3.5% / 12.4% |
+  | Issue detection, planted | 40 bugs, each with a correct twin; strict | 25% | 32.5% |
+  | False positive rate | a warning or critical finding on the correct twin | 40% | 27.5% |
+  | Security detection | 33 vulnerabilities across 12 classes; model alone / with Semgrep | 24% / 58% | 33% / 64% |
+
+  The two benchmarks are small (CIs about ±15 points). Semgrep is silently skipped if
+  its binary is not on `PATH`; `--rescan-semgrep` reruns only that part.
+- **The ROUGE-L ceiling is measured:** two human reviewers of the same hunk score
+  0.177 against each other (771 pairs), the same as the model.
 
 ## Ablations
 
@@ -57,6 +79,8 @@ python -m prana.client eval --data data/test_ood.jsonl --out runs/try1 --key-fil
 | B | Does retrieval help? (BM25 corpus memory) | No: validity −2.5 pts\*, line exact −2.7\* |
 | B′ | Does retrieval help? (code from the repository) | No: line exact −8.8 pts\*, ROUGE-L −0.005\* on 822 rows |
 | C | Does git history help? | Running (`scripts/eval_rag_full.sh`) |
+| D | Does decoding help ROUGE-L? (400 validation rows) | No: beam 4 −0.004, MBR 8 −0.002; beam raises line exact 11.6% → 27.3%\* |
+| E | Training length (v1.2, 2 epochs vs v1.3, 3 epochs) | Line localisation emerges late: line exact 1.7% vs 36.8% on test_ood |
 
 \* 95% CI excludes zero.
 

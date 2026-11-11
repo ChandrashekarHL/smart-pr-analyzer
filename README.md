@@ -46,27 +46,41 @@ prana · confidence 0.82
   per PR, with retries, deduplication and a dashboard. → [deployment](backend/DEPLOY.md)
 - **Every component is measured before it ships.** Retrieval (RAG) was built to the
   design document and evaluated twice. It did not help this model, so it stays off.
+- **Model plus rules for security.** Semgrep runs beside the model on every PR.
+  Together they find 64% of planted vulnerabilities, against 33% for the model alone.
 
 ## Results
 
 `test_ood`: 1,190 reviews from 234 held-out repositories, 95% bootstrap CIs.
 
-| Metric | v1.0 | **v1.1 (current)** | Baseline |
-|---|---|---|---|
-| Valid structured output | 99.5% | **99.5%** | — |
-| Severity macro-F1 | 0.270 | **0.352** | — |
-| Severity accuracy | 50.6% | 47.0% [44.0, 49.9] | majority class 49.4% |
-| Issue-type accuracy | 35.4% | 34.5% [31.9, 37.3] | majority class 28.0% |
-| Line number exact (where the human gave one) | 0.7% | **14.7%** | — |
-| Explanation BERTScore F1 | 0.854 | 0.856 | — |
-| Review latency, one hunk (GB10, 4-bit) | 3.3 s | 3–5 s | 30 s budget per PR |
+| Metric | v1.0 | v1.1 | **v1.3 (current)** | Baseline |
+|---|---|---|---|---|
+| Valid structured output | 99.5% | 99.5% | **99.5%** | — |
+| Line number exact (where the human gave one) | 0.7% | 14.7% | **36.8%** [32.5, 40.6] | — |
+| Severity macro-F1 | 0.270 | 0.352 | 0.322 | — |
+| Severity accuracy | 50.6% | 47.0% | 44.8% [41.9, 47.5] | majority class 49.4% |
+| Issue-type accuracy | 35.4% | 34.5% | 31.7% [29.2, 34.3] | majority class 28.0% |
+| Explanation ROUGE-L / BERTScore F1 | 0.178 / 0.854 | 0.169 / 0.856 | 0.169 / 0.856 | two humans: 0.177 ROUGE-L |
+| Review latency, one hunk (GB10, 4-bit) | 3.3 s | 3–5 s | 3.1 s median | 30 s budget per PR |
+
+Detection benchmarks (planted bugs and vulnerabilities, each in a buggy and a correct version):
+
+| Benchmark | v1.1 | **v1.3** |
+|---|---|---|
+| Planted bugs found (40 pairs) | 25% | **32.5%** |
+| False alarms on the correct version | 40% | **27.5%** |
+| Vulnerabilities found, model + Semgrep (33 pairs) | 58% | **64%** |
+| False alarms on the fixed version, model + Semgrep | 27% | 36% |
 
 **How to read this.** v1.0 collapsed to the majority class: it labelled 93% of
 findings `info` and never `critical`. v1.1 put the reasoning before the label and
 added line numbers to the prompt, which fixed that collapse (macro-F1 0.27 → 0.35)
-and made line references work. Most of the remaining disagreement with the human
-is about *which* issue to raise, not mislabelling. The model's severity matches an
-independent reading of its own explanation 82% of the time.
+and made line references work. v1.3 retrained with TRL's `SFTTrainer`, extra weight
+on security reviews and enough epochs for line localisation to emerge: comments now
+land on the exact line 2.5× as often (paired +22 points\*), and it finds more planted
+bugs with fewer false alarms. The costs: issue-type accuracy −2.9 points\*, and more
+false alarms on the security suite. Most of the remaining disagreement with the human
+is about *which* issue to raise, not mislabelling.
 → [model card](MODEL_CARD.md) · [training report](TRAINING_REPORT.md)
 
 | Ablation | Result |
@@ -85,6 +99,7 @@ flowchart LR
     API -- enqueue --> Q[(Redis)]
     Q --> W[worker<br/>Celery]
     W -- one hunk at a time --> M[model API<br/>DeepSeek-Coder 6.7B + LoRA<br/>DGX Spark GPU]
+    W -- added lines --> S[Semgrep<br/>security rules]
     W -- one review, inline comments --> GH
     API & W --> DB[(Postgres)]
     D[dashboard<br/>Streamlit] --> API
@@ -94,7 +109,8 @@ flowchart LR
 1. **Data** (`prana.data`): scrape → bot and author-reply removal → splits by PR and
    by repository → 13-gram decontamination → teacher labelling → finalized schema.
 2. **Training** (`prana.train`): QLoRA 4-bit NF4, r=16, α=32, all attention and MLP
-   projections, completion-only loss, Unsloth. 3 epochs on one DGX Spark (GB10).
+   projections, completion-only loss, Unsloth; TRL `SFTTrainer` with padding-free
+   packing (or a tested in-house trainer). 3 epochs on one DGX Spark (GB10).
 3. **Retrieval** (`prana.rag`): enclosing code, cross-file definitions, ChromaDB
    similar code, measured repo conventions, past reviews and git history, all
    behind one function that never raises. Off in serving (see ablation B).
@@ -136,16 +152,16 @@ PYTHONPATH=src:../src:tests pytest                      # backend + dashboard
 ```bash
 python -m prana.data.build --out data/train_v2 --allow-any-license
 python -m prana.data.decontaminate --data data/train_v2 --apply
-python -m prana.train --config configs/deepseek_v11.yaml
+python -m prana.train --config configs/deepseek_v13.yaml
 python -m prana.eval.generate --model deepseek-ai/deepseek-coder-6.7b-instruct \
-    --adapter runs/v1.1/adapter --data data/v1.1 --split test_ood --out runs/v1.1/eval
-python -m prana.eval.structured --predictions runs/v1.1/eval/test_ood.predictions.jsonl
+    --adapter runs/v1.3/adapter --data data/v1.1 --split test_ood --out runs/v1.3/eval
+python -m prana.eval.structured --predictions runs/v1.3/eval/test_ood.predictions.jsonl
 ```
 
 **Serve the model.**
 
 ```bash
-python -m prana.api --adapter runs/v1.1/adapter          # binds the Tailscale address, port 8100
+python -m prana.api --adapter runs/v1.3/adapter          # binds the Tailscale address, port 8100
 python -m prana.client health --url http://<host>:8100 --key-file api.key
 ```
 
@@ -162,6 +178,7 @@ any VM with Docker. Follow [`backend/DEPLOY.md`](backend/DEPLOY.md).
 | **Versioned prompt contract** with a fingerprint | Train/serve prompt drift fails silently; here it fails loudly |
 | **Explanation before severity** in the output | v1.0 picked the label before reasoning and collapsed to `info` |
 | **Paired tests before switching anything on** | Retrieval looked like a sure win and measured as a loss |
+| **Diagnose a bad run before retrying** | v1.2 lost line numbers; checking the trainer's labels, packing and checkpoints showed it was undertrained, not broken |
 | **Secrets as files**, non-root containers, HMAC | No key appears in env vars, `docker inspect`, logs or git |
 
 ## Documentation
@@ -169,7 +186,7 @@ any VM with Docker. Follow [`backend/DEPLOY.md`](backend/DEPLOY.md).
 | Document | Contents |
 |---|---|
 | [Model card](MODEL_CARD.md) | Intended use, full results, limitations |
-| [Training report](TRAINING_REPORT.md) | Six runs, what failed, and what each failure changed |
+| [Training report](TRAINING_REPORT.md) | Eight runs, what failed, and what each failure changed |
 | [Data pipeline](docs/data-pipeline.md) | Every filter and the reasoning behind it |
 | [Evaluation](docs/evaluation.md) | Metrics, principles, ablations |
 | [Deployment](backend/DEPLOY.md) | GitHub App registration, Spark or VM deployment, operations |
@@ -183,8 +200,9 @@ any VM with Docker. Follow [`backend/DEPLOY.md`](backend/DEPLOY.md).
   hunks are cut in the middle.
 - Retrieval did not help the current model. A model trained with this context is
   the next experiment.
-- The issue-detection and security-detection rates from the design document are
-  not measured yet.
+- The design document's targets are not met: 32.5% planted-issue detection
+  (target 70%), 27.5% false alarms (target 15%), 64% security detection with
+  Semgrep (target 80%). Performance problems are not detected at all.
 
 ## About
 

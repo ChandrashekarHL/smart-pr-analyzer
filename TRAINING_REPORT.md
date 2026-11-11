@@ -1,6 +1,6 @@
-# Training report — prana, v0.3 → v1.1
+# Training report — prana, v0.3 → v1.3
 
-Six training runs over three weeks on one DGX Spark (GB10, 121 GB unified memory). Each run was
+Eight training runs over five weeks on one DGX Spark (GB10, 121 GB unified memory). Each run was
 evaluated on held-out repositories before the next was designed; each failure below changed
 the pipeline, and the change is tested in `tests/`.
 
@@ -11,7 +11,9 @@ the pipeline, and the change is tested in `tests/`.
 | v0.3 | Sep 30 | corpus v1, 24.5k | prose | **Invalid** — tokenizer stripped all whitespace |
 | v0.3.1 | Oct 3 | corpus v2, 22.4k | prose | Works; small real gain over base (ablation A) |
 | v1.0 | Oct 19 | v1, 12.5k labelled | JSON | 98% valid JSON; severity collapsed to majority class |
-| **v1.1** | Oct 22 | v1.1, 12.5k + context | JSON, reasoning first | Collapse broken, line numbers work; context hurts |
+| v1.1 | Oct 22 | v1.1, 12.5k + context | JSON, reasoning first | Collapse broken, line numbers work; context hurts |
+| v1.2 | Nov 1 | v1.1 − 53 bot rows, SECURITY ×3 | same | TRL, 2 epochs, no context: **line numbers lost** (undertrained) |
+| **v1.3** | Nov 3 | same as v1.2 | same | TRL, 3 epochs: **line exact 36.8%**, fewer false alarms; served |
 
 ## Decisions that shaped the data
 
@@ -78,6 +80,47 @@ evaluation and serving. Re-measured on the same 1,190 rows (r3): valid JSON rose
 for both v1.0 (from 98.7%) and v1.1 (from 96.5%). The validity gap between the two models was
 entirely this bug. Final v1.1: severity macro-F1 0.352, issue type 34.5%, line exact 14.7%.
 
+## Measuring what the design document asks for
+
+v1.1 was then measured on the document's detection targets
+(`prana.eval.judge`, `prana.eval.bench`, `prana_app.security_eval`, all judged by
+`gemini-3.8-flash` at temperature 0): it raised the human reviewer's issue on 4.0% of
+test_ood rows (12.9% lenient), found 25% of 40 planted bugs with a 40% false-alarm rate on
+the correct versions, and 24% of 33 planted vulnerabilities. Semgrep beside it raised
+security detection to 58%. Two human reviewers of the same hunk score only 0.177 ROUGE-L
+against each other, so the 0.42 target is not a model problem. Decoding (beam 4, MBR 8)
+did not move ROUGE-L.
+
+### v1.2 — five changes at once, and a regression
+TRL `SFTTrainer` replaced the custom trainer (15-step parity check: last-5 loss 1.548 vs
+1.526); filters v5 dropped 53 AI-reviewer rows that had leaked into training; SECURITY rows
+were repeated ×3; context dropout went to 1.0 (train as served); epochs 3 → 2 because
+TRL ran 2× slower. Paired against v1.1: **line exact 14.7% → 1.7%\***, issue type −4.0\*,
+the rest unchanged. It was not served.
+
+Diagnosis, measured rather than guessed:
+
+| Question | Check | Answer |
+|---|---|---|
+| Was the line number in the loss? | `scripts/diagnose_trl.py` decodes the supervised tokens of the exact TRL/Unsloth batches | yes — whole completion supervised, nothing truncated |
+| Did packed examples see each other? | loss of a packed example vs the same example alone | no — 1.947 vs 1.951 (only when Unsloth gets `packed_seq_lengths`) |
+| Is it the data? | line numbers in training targets | 42% of rows, 55% of security rows |
+| Is it training length? | `scripts/ckpt_probe.sh`: late checkpoints, 200 validation rows | **yes** — v1.1 gives a line in 8% of rows at epoch 2.6 and 27% at 2.8; v1.2 stopped at 2 |
+| Why was TRL 2× slower? | `scripts/trl_speed.sh` | padding-free packing puts the whole micro-batch (8 × 2,048) in one row and attention is quadratic in it; batch 1 × 32 accumulation gives identical losses at 98 vs 187 s/step |
+
+Putting five changes in one run was the mistake: the regression could not be attributed
+until the checks above. Later runs change one thing at a time where the GPU budget allows.
+
+### v1.3 — v1.2's data with v1.1's training budget
+TRL `SFTTrainer`, batch 1 × 32, 3 epochs, context dropout back to 0.3, bot rows dropped,
+SECURITY ×3; 603 steps in 15.0 h. Paired against v1.1 on the same 1,190 rows: **line exact
++22.1 pts\*** (14.7% → 36.8%), issue type −2.9\*, severity −2.2, validity and ROUGE-L
+unchanged. On the benchmarks: planted-bug detection 25% → 32.5%, false alarms 40% → 27.5%,
+planted security 38% → 54%; security suite with Semgrep 58% → 64% detected, with false
+positives 27% → 36%. v1.3 is the served model. Its validation loss logged `nan` (batch 1 with
+padding-free packing in evaluation); training loss fell normally, 1.83 → 1.06, and every
+result above comes from separate generation.
+
 ## Reproducing
 
 ```bash
@@ -85,7 +128,7 @@ python -m prana.data.build --out data/train_v2 --allow-any-license
 python -m prana.data.decontaminate --data data/train_v2 --apply
 python -m prana.data.label --in data/train_v2/train.jsonl --out data/train_v3/train.jsonl   # per split
 # on the Spark:
-run-job start prana-v11 -- bash scripts/run_v11.sh
+run-job start prana-v13 -- bash scripts/run_v13.sh
 ```
 Every dataset card records the filter version, config fingerprint, teacher model and per-split
 SHA-256.

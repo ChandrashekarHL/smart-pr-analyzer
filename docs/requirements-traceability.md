@@ -4,7 +4,7 @@ Every requirement, milestone and target in the two governing documents —
 `PR_Analyzer_Design_Document.docx` (v1.0) and `PR_Analyzer_Project_Document.docx`
 (v2.0, which supersedes v1.0 where they differ) — mapped to its status and the
 evidence for it. Numbers are measurements unless marked *estimate*. Updated
-2026-10-30.
+2026-11-11 (served model: v1.3).
 
 Status key: **Done** · **Partial** (part built or part measured) · **In progress**
 (being built or measured now) · **Not started** · **Deviation** (done differently,
@@ -15,16 +15,16 @@ with the reason).
 | ID | Requirement | Status | Evidence / note |
 |---|---|---|---|
 | FR-01 | Scrape 50k–80k PR reviews, Python/JS, `{code_diff} → {review_comment}` with severity labels | **Deviation** | 188,052 comments scraped from 656 repos. After removing AI-authored reviews (19%), PR-author replies (43% of the rest) and low-quality rows, **12,483** training reviews remain. The 50k target would have meant training on bots and author replies. Severity comes from a teacher model, not keyword rules (κ 0.92). `data/v1.1/dataset-card.md` |
-| FR-02 | QLoRA 4-bit fine-tune of DeepSeek-Coder 6.7B; severity + line numbers | **Done** | v1.1: r16/α32, NF4, 633 steps. Severity macro-F1 0.352; line exact 14.7% where the reference has one. `MODEL_CARD.md` |
+| FR-02 | QLoRA 4-bit fine-tune of DeepSeek-Coder 6.7B; severity + line numbers | **Done** | v1.3: r16/α32, NF4, TRL SFTTrainer, 603 steps. Line exact 36.8% where the reference has one (v1.1: 14.7%); severity macro-F1 0.322. `MODEL_CARD.md` |
 | FR-03 | RAG: git history, ChromaDB embeddings, repo conventions in the prompt | **In progress** | Built 2026-10-30 to Module 3: `prana.rag.contract` (six sources). Code sources measured on test_ood (822 rows): line exact −8.8 pts\*, ROUGE-L −0.005\*, others not significant → **off in serving**. Full six-source evaluation (ablations B, C) running |
-| FR-04 | FastAPI webhook, async via Redis+Celery, inline comments | **Built, not deployed** | `backend/` (`prana_app`): HMAC-verified webhook, GitHub App JWT → installation tokens, one review per PR with inline comments on validated diff lines, summary comment. 31 tests; Docker smoke test on the Spark passed (signed webhook → queued → worker → GitHub). Needs the App registered and the VM (`backend/DEPLOY.md`) |
+| FR-04 | FastAPI webhook, async via Redis+Celery, inline comments | **Done** | `backend/` (`prana_app`): HMAC-verified webhook, GitHub App JWT → installation tokens, one review per PR head commit with inline comments on validated diff lines, summary comment, Semgrep findings beside the model's. GitHub App `prana-reviewer` registered; 7-service Docker Compose stack live on the Spark behind Tailscale Funnel since 2026-10-30, with a 2-minute sweep for missed webhooks (`backend/DEPLOY.md`) |
 | FR-05 | issue_type, line_number, severity, explanation, suggestion, confidence | **Done** | `prana.schema` + `prana.serve`; 99.5% schema-valid on test_ood; confidence = exp(mean token log-prob) |
-| FR-06 | Eval suite: ROUGE-L, BERTScore, issue detection, FPR, security detection; W&B | **Partial** | ROUGE-L/BERTScore per field, severity/issue accuracy + macro-F1 with majority baselines, bootstrap CIs, paired comparisons (`prana.eval.*`). Issue detection rate, FPR, security suite not yet. Training runs in W&B; eval metrics not yet |
-| FR-07 | Flag SQLi, secrets, deserialization, input validation, path traversal | **Not started** | `SECURITY` is an issue type; the 100-PR synthetic suite is not built |
+| FR-06 | Eval suite: ROUGE-L, BERTScore, issue detection, FPR, security detection; W&B | **Done** | Per-field scoring with CIs and paired tests; issue detection by LLM judge on test_ood (v1.3 3.5% strict, 12.4% lenient) and a 40-pair planted benchmark (v1.3 32.5%, v1.1 25%); false positive rate v1.3 27.5% (v1.1 40%); security benchmark (below); human-vs-human ROUGE-L ceiling 0.177. Training runs in W&B. `docs/evaluation.md` |
+| FR-07 | Flag SQLi, secrets, deserialization, input validation, path traversal | **Partial** | 33-pair security benchmark across 12 vulnerability classes (`prana.eval.bench_security`). Measured detection / false positives: v1.3 reviewer 33% / 36% (v1.1 24% / 24%); **v1.3 + Semgrep rules 64% / 36%** (v1.1 58% / 27%), the live configuration; a LangChain security pass on the base model added nothing beyond that and is off. Target 80% not met |
 | FR-08 | Missing tests / untested paths | **Partial** | `TEST` issue type exists; not measured separately |
 | FR-09 | Python + JS/TS, extensible | **Done** | Python, TypeScript, JavaScript, Go, Rust |
-| FR-10 | Dashboard: history, confidence, feedback, latency, W&B | **Built, not deployed** | Streamlit (`backend/dashboard`) behind Caddy basic auth: reviews, p50/p95 review time per day against the 30 s target, severity, issue type, confidence histogram, 👍/👎 helpful rate (reactions collected every 15 min by a Celery beat task), recent runs and comments, optional W&B report embed. 10 tests incl. the page rendered headlessly; screenshot-checked against seeded data in the Docker stack |
-| FR-11 | 200 ms webhook ack, async jobs, 100 concurrent | **Built, not deployed** | Webhook acknowledged in 112 ms (measured, Docker, cold); Celery + Redis (append-only) with late acks, 3 retries with back-off, failed runs kept as dead letters with replay. Throughput is bounded by the one GPU (~3.5 s per hunk); the queue absorbs bursts |
+| FR-10 | Dashboard: history, confidence, feedback, latency, W&B | **Done** (live at `/dashboard/`) | Streamlit (`backend/dashboard`) behind Caddy basic auth: reviews, p50/p95 review time per day against the 30 s target, severity, issue type, confidence histogram, 👍/👎 helpful rate (reactions collected every 15 min by a Celery beat task), recent runs and comments, optional W&B report embed. 10 tests incl. the page rendered headlessly; screenshot-checked against seeded data in the Docker stack |
+| FR-11 | 200 ms webhook ack, async jobs, 100 concurrent | **Partial** (deployed; concurrency not load-tested) | Webhook acknowledged in 112 ms (measured, Docker, cold); Celery + Redis (append-only) with late acks, 3 retries with back-off, failed runs kept as dead letters with replay. Throughput is bounded by the one GPU (~3.5 s per hunk); the queue absorbs bursts |
 | FR-12 | Duplicate-comment suppression (cosine > 0.9) | **Built** | Exact fingerprint marker in every comment + text similarity ≥ 0.9 within 3 lines on the same file (`prana_app.review.is_duplicate`); stdlib similarity instead of embeddings, so the worker needs no ML libraries |
 
 ## Module 2 — Fine-Tuning Engine (project doc §4.2)
@@ -34,14 +34,14 @@ with the reason).
 | 2.1 Base model | deepseek-coder-6.7b-instruct | same | **Done** |
 | 2.1 Quantisation | 4-bit NF4, BitsAndBytes | NF4 + double quantisation, BitsAndBytes 0.50 | **Done** |
 | 2.2 LoRA | r=16, α=32, dropout 0.05 | same | **Done** |
-| 2.2 Target modules | q, k, v, o, gate, up, down | same 7 projections (checked in `runs/v1.1/adapter/adapter_config.json`) | **Done** |
+| 2.2 Target modules | q, k, v, o, gate, up, down | same 7 projections (checked in `runs/v1.3/adapter/adapter_config.json`) | **Done** |
 | 2.2 Trainable params | ~40M, <0.6% | 40.0M = 0.59% of 6.74B | **Done** |
-| 2.3 Trainer | TRL SFTTrainer with packing | HF `Trainer` + our own packing and completion-only loss (~60 lines, tested) | **Deviation** — SFTTrainer's API changed across the versions on the Spark; loss masking is now ours and tested |
+| 2.3 Trainer | TRL SFTTrainer with packing | **TRL SFTTrainer** (v1.2, v1.3): prompt/completion data, completion-only loss, padding-free best-fit packing; label coverage and packed-example isolation verified (`scripts/diagnose_trl.py`). v1.0/v1.1 used HF `Trainer` with our own packing, still supported | **Done** |
 | 2.3 Sequence length | 2,048 | 2,048 | **Done** |
-| 2.3 Batch | 4 × accumulation 8 = 32 | 8 × 4 = 32 | **Done** (same effective batch) |
-| 2.3 Learning rate | 2e-4, cosine, 3% warmup | **1e-4**, cosine, 3% warmup | **Deviation, untested** — carried over from the first baseline config; no 2e-4 run to compare. Eval loss plateaued by epoch 2.5, so there is no sign of under-training |
-| 2.3 Epochs | 3 | 3 (v1.0, v1.1) | **Done** |
-| 2.3 Hardware / time | Colab T4, ~8 h | DGX Spark GB10 + Unsloth (fastest of 4 measured setups), 12.5 h | **Deviation** — better hardware available |
+| 2.3 Batch | 4 × accumulation 8 = 32 | 1 × 32 = 32 with padding-free packing (v1.3); 8 × 4 before | **Done** (same effective batch; 1 × 32 measured 1.9× faster with identical losses) |
+| 2.3 Learning rate | 2e-4, cosine, 3% warmup | **1e-4**, cosine, 3% warmup | **Deviation, untested** — carried over from the first baseline config; no 2e-4 run to compare |
+| 2.3 Epochs | 3 | 3 (v1.0, v1.1, v1.3) | **Done** — v1.2 tried 2 and lost line localisation, which emerges after epoch 2.6 |
+| 2.3 Hardware / time | Colab T4, ~8 h | DGX Spark GB10 + Unsloth (fastest of 4 measured setups), 15.0 h (v1.3) | **Deviation** — better hardware available |
 | 2.3 W&B every 100 steps | loss, grad norm, eval loss | logged every 10 steps, eval every 50 | **Done** |
 | 2.3 Checkpoints to HF Hub every 500 steps | HF Hub | local checkpoints every 50 steps, last 3 kept | **Partial** — not on HF Hub |
 | 2.4 Fields | issue_type, severity, line_number, explanation, suggestion, confidence | all six; explanation first so the label follows the reasoning | **Done** |
@@ -51,7 +51,7 @@ with the reason).
 | 1.3 Prompt format | `### Instruction / ### Code Diff / ### Repo Context / ### Review` | DeepSeek's chat template, versioned prompt with fingerprint checked at serve time | **Deviation** — the instruct model was trained on its chat template |
 | 1.3 Truncation | tiktoken, 2,048 tokens | the model's own tokenizer, prompt fit to 1,792 tokens | **Done** — tiktoken miscounts DeepSeek tokens |
 | 1.3 Split | stratified 85/10/5 | by PR and by repository (held-out `test_ood`) | **Deviation** — a random split leaks the same PR into train and test |
-| M2 | model on HF Hub; W&B run; eval loss < 1.5; 10 diffs → all fields | W&B run ✓; eval loss 1.157 ✓; 99.5% schema-valid on 1,190 held-out rows ✓; HF Hub ✗ | **Partial** |
+| M2 | model on HF Hub; W&B run; eval loss < 1.5; 10 diffs → all fields | W&B run ✓; eval loss 1.157 (v1.1; v1.3's eval loss logged `nan`, training loss 1.06) ✓; 99.5% schema-valid on 1,190 held-out rows ✓; HF Hub ✗ | **Partial** |
 
 ## Module 3 — RAG Context Layer (project doc §4.3)
 
@@ -72,14 +72,14 @@ with the reason).
 
 | Category | Target | Status | Evidence / note |
 |---|---|---|---|
-| Latency | ≤30 s per PR; webhook ≤200 ms | **Built, not deployed** | 3–5 s per hunk (measured); the worker reviews the 8 largest hunks and stops calling the model at a 25 s budget, saying what it skipped. Webhook ack 112 ms (measured) |
+| Latency | ≤30 s per PR; webhook ≤200 ms | **Done** | v1.3 median 3.1 s per hunk, p90 3.6 s (146 live requests); the worker reviews the 8 largest hunks and stops calling the model at a 25 s budget, saying what it skipped. Webhook ack 112 ms (measured) |
 | Availability | 99% uptime; error comment on failure | **Partial** | Backend: restart policies, health checks, retries, failure comment on the PR after the last retry (tested). Model API still a GPU-queue job; systemd needs sudo on the Spark |
 | Scalability | 100 concurrent reviews | **Partial** | The queue accepts any number and the worker scales with `--concurrency`; generation is serialised on the one GPU, so throughput is ~1 hunk per 3.5 s |
 | Reproducibility | Hyperparameters, dataset hash, artifacts in HF + W&B | **Partial** | Configs, dataset SHA-256s, `environment.json`, prompt fingerprints; training runs in W&B. HuggingFace Hub upload not done |
 | Security | JWT, no keys in code, HMAC-SHA256, env secrets | **Built** | App JWT (RS256) → 1-hour installation tokens; HMAC-SHA256 on the raw body, constant time; secrets as files (not env values, so they never appear in `docker inspect`); non-root container; dashboard behind a bearer token; HTTPS by Caddy |
-| Model quality | Issue detection ≥70%, BERTScore ≥0.75, ROUGE-L ≥0.42, security ≥80% | **Partial** | BERTScore 0.856 ✓. ROUGE-L 0.169 ✗ (see note). Detection/security not measured |
+| Model quality | Issue detection ≥70%, BERTScore ≥0.75, ROUGE-L ≥0.42, security ≥80% | **Partial** | v1.3: BERTScore 0.856 ✓. ROUGE-L 0.169 ✗ (two humans score 0.177; see note). Planted-issue detection 32.5% ✗ (target 70%), false positives 27.5% ✗ (target 15%), security with Semgrep 64% ✗ (target 80%) |
 | Portability | Docker Compose; CPU fallback | **Partial** | `backend/docker-compose.yml` (api, worker, Postgres, Redis, Caddy), built and run on aarch64. The model needs the GPU; no CPU fallback |
-| Maintainability | Modular, unit + integration tests, ≥80% coverage, CI | **Partial** | 495 model-side + 66 RAG + 31 backend tests pass; ruff clean (backend); GitHub Actions workflow written (`.github/workflows/ci.yml`), not yet running (repo not pushed); coverage not measured |
+| Maintainability | Modular, unit + integration tests, ≥80% coverage, CI | **Partial** | 495 model-side + 66 RAG + 31 backend tests pass; ruff clean (backend); GitHub Actions CI runs both suites (backend against a real Postgres) and builds the images on every push; coverage not measured |
 
 ## Milestones (project doc §7)
 
@@ -88,8 +88,8 @@ with the reason).
 | M1 | ≥50k examples; splits; HF dataset; severity distribution | **Partial** — splits by PR and repo, severity distribution documented; 12,483 rows (deviation above); no HF upload |
 | M2 | Model on HF Hub; W&B run; eval loss < 1.5; 10 diffs → all fields | **Partial** — eval loss 1.157 ✓, W&B run ✓, structured output ✓; not on HF Hub |
 | M3 | ChromaDB indexes repo; top-5 relevant; prompt < 2048 tokens; ≥5 convention rules | **In progress** — index, top-5 and budget done; rule counts and relevance being measured |
-| M4 | Inline comments on 5 test PRs within 30 s | **Blocked on deployment** — code done; needs the App registered and the VM |
-| M5 | 10 concurrent jobs, retries, 200 ms ack | **Partial** — retries and 112 ms ack verified; 10-concurrent load test after deployment |
+| M4 | Inline comments on 5 test PRs within 30 s | **Partial** — deployed and reviewing; demo repo `smart-pr-analyzer-demo` has 12 scenario branches, not all opened as PRs yet |
+| M5 | 10 concurrent jobs, retries, 200 ms ack | **Partial** — retries and 112 ms ack verified; 10-concurrent load test not run |
 | M6 | ROUGE-L ≥0.42, BERTScore ≥0.75, detection ≥70%, FPR ≤15%, security ≥80% | **Partial** — see model quality |
 | M7 | Ablations A, B, C in W&B | **In progress** — A done (+0.0093 ROUGE-L, CI excludes 0); B (BM25 corpus memory) negative; B and C for Module 3 running now; not yet in W&B |
 | M8 | CI badge, live demo, video, blog, resume bullets | **Not started** |
@@ -101,8 +101,8 @@ with the reason).
   perfect reviewer scores far below 0.42 against a single reference. We
   report it honestly (0.169) beside per-field accuracy, macro-F1 and a human
   evaluation, which measure what the target was meant to.
-- **Issue detection rate** needs a definition before it can be measured: the
-  plan is the doc's own — a labelled set where each PR has known issues, and
-  the synthetic security suite for FR-07.
+- **Issue detection rate** is measured three ways (definitions in
+  `docs/evaluation.md`): an LLM judge on real held-out reviews, a 40-pair
+  planted-bug benchmark, and the 33-pair security suite for FR-07.
 - **The resume bullets** in both documents quote numbers (72% detection, F1
   0.78, 65k reviews) that were targets. Only measured numbers go on a resume.
