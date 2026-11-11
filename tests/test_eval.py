@@ -169,3 +169,30 @@ def test_render_within_budget_leaves_small_hunks_alone():
     small = "@@ -1 +1 @@\n+x := y"
     text = render_within_budget(_CharTokenizer(), small, "go", None, "v2")
     assert "+x := y" in text and "lines omitted" not in text
+
+
+# ------------------------------------------------------------- MBR decoding
+
+def _review(expl, sev="warning"):
+    import json as _json
+    return _json.dumps({"explanation": expl, "suggestion": "", "severity": sev,
+                        "issue_type": "BUG", "file_path": None, "line_number": None})
+
+
+def test_mbr_picks_the_consensus_candidate():
+    from prana.eval.generate import mbr_select
+    cands = [_review("The loop never closes the file handle."),
+             _review("The file handle is never closed in this loop."),
+             _review("Rename this variable for clarity."),
+             _review("This loop never closes the file handle it opens.")]
+    assert mbr_select(cands) in (cands[0], cands[1], cands[3])
+    assert mbr_select(cands) != cands[2]
+
+
+def test_mbr_prefers_valid_output_and_is_deterministic():
+    from prana.eval.generate import mbr_select
+    cands = ["not json at all", _review("Close the file."), "{broken"]
+    assert mbr_select(cands) == cands[1]
+    same = [_review("Same."), _review("Same.")]
+    assert mbr_select(same) == same[0]                 # tie -> earliest
+    assert mbr_select(["only one"]) == "only one"

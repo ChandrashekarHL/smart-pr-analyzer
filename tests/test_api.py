@@ -178,3 +178,50 @@ def test_client_retries_server_errors(monkeypatch):
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)
     assert mod.Client("http://x", KEY).review("d", "go") == {"text": "{}"}
     assert len(calls) == 3
+
+
+# ------------------------------------------------------------ /generate (security pass)
+
+class RawReviewer(FakeReviewer):
+    def __init__(self):
+        super().__init__()
+        self.raw_calls = []
+
+    def generate_raw(self, messages, max_new_tokens, use_adapter):
+        self.raw_calls.append((messages, max_new_tokens, use_adapter))
+        return {"text": '{"findings": []}', "latency_s": 0.01, "adapter_used": use_adapter,
+                "prompt_truncated": False}
+
+
+def _gen(c, body, key=KEY):
+    return c.post("/generate", json=body, headers={"X-API-Key": key} if key else {})
+
+
+def test_generate_runs_the_base_model_when_asked():
+    rev = RawReviewer()
+    c = TestClient(create_app(rev, KEY))
+    r = _gen(c, {"messages": [{"role": "user", "content": "check this"}], "adapter": False,
+                 "max_new_tokens": 200})
+    assert r.status_code == 200 and r.json()["adapter_used"] is False
+    assert rev.raw_calls == [([{"role": "user", "content": "check this"}], 200, False)]
+
+
+@pytest.mark.parametrize("body,status", [
+    ({"messages": [{"role": "user", "content": "x"}]}, 200),
+    ({"messages": []}, 422),
+    ({"messages": [{"role": "root", "content": "x"}]}, 422),
+    ({"messages": [{"role": "user", "content": "x"}], "max_new_tokens": 5000}, 422),
+    ({"messages": [{"role": "user", "content": "x" * 25_000}]}, 422),
+])
+def test_generate_validates_input(body, status):
+    rev = RawReviewer()
+    c = TestClient(create_app(rev, KEY))
+    assert _gen(c, body).status_code == status
+    assert len(rev.raw_calls) == (1 if status == 200 else 0)
+
+
+def test_generate_requires_the_key():
+    rev = RawReviewer()
+    c = TestClient(create_app(rev, KEY))
+    assert _gen(c, {"messages": [{"role": "user", "content": "x"}]}, key=None).status_code == 401
+    assert rev.raw_calls == []

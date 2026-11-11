@@ -312,3 +312,33 @@ def test_priority_word_in_prose_is_not_markup():
     assert not filters.BOT_MARKUP.search(
         "I'd treat this as P2 - it only affects the debug build, but worth a fix."
     )
+
+
+# ------------------------------------------------- filters v5 (2026-10-30 audit)
+
+@pytest.mark.parametrize("name", ["2dc80ef9", "56ec8c27"])
+def test_v5_ai_reviewer_accounts_rejected(name):
+    assert filters.is_bot_reviewer(name)
+
+
+@pytest.mark.parametrize("text", [
+    '**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Honor overrides**',
+    "**[WARNING/test] Missing tests for nested models**\n\nThe tests only check top-level keys.",
+    "Some context first.\n**[ERROR/vulnerability] Nested state leakage**",
+])
+def test_v5_ai_markup_detected(text):
+    assert filters.BOT_MARKUP.search(text)
+
+
+@pytest.mark.parametrize("text", [
+    "This is a P2 issue in my opinion; the blast radius is small.",
+    "[WARNING] the docs say this is deprecated",            # no bold header, no category
+    "See https://img.shields.io/badge/build-passing for the badge we use",
+])
+def test_v5_markup_does_not_catch_human_prose(text):
+    assert not filters.BOT_MARKUP.search(text)
+
+
+def test_v4_priority_badge_still_matches_only_at_the_start():
+    assert filters.BOT_MARKUP.search("**[P2 · test]** missing coverage")
+    assert not filters.BOT_MARKUP.search("I'd call this\n**[P2 · test]** level")

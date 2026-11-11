@@ -30,6 +30,7 @@ class Finding:
     confidence: float
     model: str = ""
     adapter: str = ""
+    rule: str = ""              # set for Semgrep findings: the rule id
 
     @property
     def fingerprint(self) -> str:
@@ -41,8 +42,12 @@ class Finding:
         out = [f"{icon} **{self.severity} · {self.issue_type}** — {self.explanation.strip()}"]
         if self.suggestion.strip():
             out.append(f"\n**Suggestion:** {self.suggestion.strip()}")
-        note = "" if self.line_exact else " · line approximate"
-        out.append(f"\n<sub>prana · confidence {self.confidence:.2f}{note}</sub>")
+        if self.rule:
+            # A rule match, not a model guess: say which rule, not a confidence.
+            out.append(f"\n<sub>prana · Semgrep rule <code>{self.rule}</code></sub>")
+        else:
+            note = "" if self.line_exact else " · line approximate"
+            out.append(f"\n<sub>prana · confidence {self.confidence:.2f}{note}</sub>")
         out.append(MARKER.format(fp=self.fingerprint))
         return "\n".join(out)
 
@@ -97,6 +102,9 @@ def summary(posted: list[Finding], low_confidence: list[Finding], reviewed: int,
              f"Reviewed **{reviewed}** of {total} changed hunks in supported languages."]
     if posted:
         lines.append(" · ".join(f"{SEVERITY_ICON[s]} {n} {s}" for s, n in counts.items() if n))
+        n_rules = sum(1 for f in posted if f.rule)
+        if n_rules:
+            lines.append(f"{n_rules} of these come from Semgrep security rules.")
     else:
         lines.append("No inline comments.")
     notes = []

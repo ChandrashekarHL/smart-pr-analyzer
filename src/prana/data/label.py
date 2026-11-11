@@ -236,15 +236,18 @@ class GeminiClient:
             payload = json.loads(resp.read().decode("utf-8"))
         return [m["name"].split("/", 1)[-1] for m in payload.get("models", [])]
 
-    def generate(self, user_text: str, max_attempts: int = 6) -> str:
-        """One structured-output call with backoff on rate limits and 5xx."""
+    def generate(self, user_text: str, max_attempts: int = 6, *,
+                 system: str | None = None, schema: dict | None = None) -> str:
+        """One structured-output call with backoff on rate limits and 5xx.
+        Defaults to the labelling instruction and schema; the evaluation judge
+        (`prana.eval.judge`) passes its own."""
         body = {
-            "systemInstruction": {"parts": [{"text": SYSTEM_INSTRUCTION}]},
+            "systemInstruction": {"parts": [{"text": system or SYSTEM_INSTRUCTION}]},
             "contents": [{"role": "user", "parts": [{"text": user_text}]}],
             "generationConfig": {
                 "temperature": 0.0,
                 "responseMimeType": "application/json",
-                "responseSchema": RESPONSE_SCHEMA,
+                "responseSchema": schema or RESPONSE_SCHEMA,
             },
         }
         url = f"{API_ROOT}/models/{self.model}:generateContent"

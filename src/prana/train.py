@@ -269,6 +269,62 @@ def detect_target_modules(model) -> list[str]:
     return preferred or sorted(found)
 
 
+def _render(tokenizer, messages, generation_prompt: bool) -> str:
+    if getattr(tokenizer, "chat_template", None):
+        return tokenizer.apply_chat_template(messages, tokenize=False,
+                                             add_generation_prompt=generation_prompt)
+    body = "\n\n".join(f"{m['role'].upper()}: {m['content']}" for m in messages)
+    return body + ("\n\nASSISTANT:" if generation_prompt else "")
+
+
+def prompt_completion(tokenizer, row: dict, cfg: Config, rng: random.Random) -> dict | None:
+    """One row as TRL's prompt/completion pair, rendered exactly as
+    `encode_example` renders it: the full chat string split at the prompt
+    boundary, so the prompt contract (and serving) are unchanged. TRL then
+    computes the loss on the completion only."""
+    answer = target_text(row, cfg)
+    if not answer or not answer.strip():
+        return None
+    context = row.get("rag_context")
+    if context and rng.random() < float(cfg.get("data.context_dropout", 0.3)):
+        context = None
+    prompt_messages = build_messages(row["diff_hunk"], row["language"], context)
+    full_messages = [*prompt_messages, {"role": "assistant", "content": answer.strip()}]
+    prompt = _render(tokenizer, prompt_messages, True)
+    full = _render(tokenizer, full_messages, False)
+    if not full.startswith(prompt) or len(full) == len(prompt):
+        return None                      # template does not split cleanly: skip, counted
+    return {"prompt": prompt, "completion": full[len(prompt):]}
+
+
+def select_rows(rows: list[dict], cfg: Config, seed: int) -> tuple[list[dict], dict]:
+    """Training-row selection for v1.2+:
+
+    - `data.drop_bot_rows`: drop rows the current bot filters reject
+      (filters v5 found 53 AI-reviewer rows that had leaked into v1.1 train);
+    - `data.oversample`: {issue_type: k} repeats rows of that type k times in
+      total (security is 2.4% of the corpus and the model under-detects it).
+    Deterministic for a seed. Returns (rows, accounting)."""
+    from prana.data import filters
+    stats = {"input": len(rows)}
+    if cfg.get("data.drop_bot_rows", False):
+        kept = [r for r in rows if not (filters.is_bot_reviewer(r.get("reviewer"))
+                                       or filters.BOT_MARKUP.search(r.get("review_comment") or ""))]
+        stats["dropped_bot_rows"] = len(rows) - len(kept)
+        rows = kept
+    oversample = cfg.get("data.oversample") or {}
+    if oversample:
+        extra = []
+        for r in rows:
+            k = int(oversample.get((r.get("structured_output") or {}).get("issue_type"), 1))
+            extra.extend([r] * (k - 1))
+        stats["oversampled_extra_rows"] = len(extra)
+        rows = rows + extra
+        random.Random(seed).shuffle(rows)
+    stats["output"] = len(rows)
+    return rows, stats
+
+
 def build_dataset(tokenizer, rows: list[dict], cfg: Config, seed: int) -> list[dict]:
     rng = random.Random(seed)
     encoded = [e for e in (encode_example(tokenizer, r, cfg, rng) for r in rows) if e]
@@ -370,11 +426,23 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    train_ds = build_dataset(tokenizer, train_rows, cfg, seed)
-    eval_ds = build_dataset(tokenizer, eval_rows, cfg, seed + 1)
-    tokens = sum(len(b["input_ids"]) for b in train_ds)
-    print(f"train {len(train_rows)} rows -> {len(train_ds)} blocks, {tokens / 1e6:.1f}M tokens")
-    print(f"eval  {len(eval_rows)} rows -> {len(eval_ds)} blocks")
+    train_rows, selection = select_rows(train_rows, cfg, seed)
+    print(f"row selection: {selection}")
+    trainer_kind = cfg.get("train.trainer", "custom")
+    if trainer_kind == "trl":
+        from datasets import Dataset
+        rng_t, rng_e = random.Random(seed), random.Random(seed + 1)
+        pcs_t = [p for p in (prompt_completion(tokenizer, r, cfg, rng_t) for r in train_rows) if p]
+        pcs_e = [p for p in (prompt_completion(tokenizer, r, cfg, rng_e) for r in eval_rows) if p]
+        selection["skipped_unsplittable"] = len(train_rows) - len(pcs_t)
+        train_ds, eval_ds = Dataset.from_list(pcs_t), Dataset.from_list(pcs_e)
+        print(f"train {len(train_rows)} rows -> {len(train_ds)} prompt/completion pairs (TRL)")
+    else:
+        train_ds = build_dataset(tokenizer, train_rows, cfg, seed)
+        eval_ds = build_dataset(tokenizer, eval_rows, cfg, seed + 1)
+        tokens = sum(len(b["input_ids"]) for b in train_ds)
+        print(f"train {len(train_rows)} rows -> {len(train_ds)} blocks, {tokens / 1e6:.1f}M tokens")
+    print(f"eval  {len(eval_rows)} rows -> {len(eval_ds)} examples")
 
     # ---- LoRA
     targets = cfg.get("lora.target_modules") or detect_target_modules(model)
@@ -449,17 +517,33 @@ def main() -> None:
         "load_best_model_at_end": False,
     })
 
-    trainer_kwargs = supported_kwargs(Trainer, {
-        "model": model,
-        "args": TrainingArguments(**ta),
-        "train_dataset": train_ds,
-        "eval_dataset": eval_ds,
-        "data_collator": lambda b: collate(b, tokenizer.pad_token_id),
-        **tokenizer_kwarg(tokenizer),
-    })
-
-    trainer = Trainer(**trainer_kwargs)
+    if trainer_kind == "trl":
+        # TRL's SFTTrainer: prompt/completion data, completion-only loss and
+        # packing done by TRL itself (validated against the custom path with
+        # scripts/trl_parity.sh before the v1.2 run).
+        from trl import SFTConfig, SFTTrainer
+        sft = supported_kwargs(SFTConfig, {
+            **ta,
+            "max_length": max_seq,
+            "completion_only_loss": True,
+            "packing": bool(cfg.get("data.packing", True)),
+            "packing_strategy": cfg.get("data.packing_strategy", "bfd"),
+            "dataset_num_proc": int(cfg.get("data.num_proc", 4)),
+        })
+        trainer = SFTTrainer(model=model, args=SFTConfig(**sft), train_dataset=train_ds,
+                             eval_dataset=eval_ds, processing_class=tokenizer)
+    else:
+        trainer_kwargs = supported_kwargs(Trainer, {
+            "model": model,
+            "args": TrainingArguments(**ta),
+            "train_dataset": train_ds,
+            "eval_dataset": eval_ds,
+            "data_collator": lambda b: collate(b, tokenizer.pad_token_id),
+            **tokenizer_kwarg(tokenizer),
+        })
+        trainer = Trainer(**trainer_kwargs)
     result = trainer.train(resume_from_checkpoint=args.resume or None)
+    trainer.save_state()            # trainer_state.json: the full loss/eval history
 
     adapter_dir = outdir / "adapter"
     trainer.model.save_pretrained(adapter_dir)
@@ -478,6 +562,8 @@ def main() -> None:
             "whitespace_roundtrip": True,  # load_tokenizer refuses to return otherwise
         },
         "data_dir": str(data_dir),
+        "trainer": trainer_kind,
+        "row_selection": selection,
         "lora": {"r": lora_r, "alpha": lora_alpha, "dropout": lora_dropout,
                  "target_modules": list(targets), "unsloth": use_unsloth},
         "trainable_params": trainable,

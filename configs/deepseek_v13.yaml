@@ -1,0 +1,66 @@
+# v1.3 - TRL SFTTrainer with v1.1's training budget, after diagnosing v1.2
+# (2026-11-02):
+#   - v1.2's TRL mechanics are correct (scripts/diagnose_trl.py): the whole
+#     completion incl. line_number is supervised; packed examples are isolated
+#     (segment loss packed 1.947 vs alone 1.951).
+#   - Line localisation emerges late: on 200 validation rows v1.1 gives a line
+#     in 8.0% at step 550 (epoch 2.6) and 27.5% at step 600 (scripts/ckpt_probe.sh).
+#     v1.2 stopped at 2 epochs with its LR already decayed: 1.5%. It was
+#     undertrained, so epochs go back to 3.
+#   - context_dropout back to v1.1's 0.3: the recipe that produced line
+#     localisation; v1.2 changed it together with the epochs, so it is not
+#     cleared.
+#   - batch 1 x grad_accum 32 (was 8 x 4): padding-free packing put each
+#     micro-batch into one 16k-token row and attention is quadratic in it.
+#     Same 65k tokens per step, identical losses, 98 vs 187 s/step
+#     (scripts/trl_speed.sh).
+# Kept from v1.2: TRL trainer, filters-v5 bot-row drop, SECURITY x3.
+model:
+  name: deepseek-ai/deepseek-coder-6.7b-instruct
+  dtype: bfloat16
+  load_in_4bit: true
+  bnb_quant_type: nf4
+  bnb_double_quant: true
+  attn_implementation: sdpa
+  use_unsloth: true
+
+data:
+  dir: data/v1.1
+  target_field: target_text
+  max_seq_length: 2048
+  packing: true
+  packing_strategy: bfd
+  context_dropout: 0.3
+  drop_bot_rows: true
+  oversample: {SECURITY: 3}
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: null
+
+train:
+  trainer: trl
+  batch_size: 1
+  eval_batch_size: 1
+  grad_accum: 32
+  epochs: 3
+  lr: 0.0001
+  scheduler: cosine
+  warmup_ratio: 0.03
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 50
+  save_total_limit: 4
+  eval_steps: 50
+  gradient_checkpointing: true
+  optim: paged_adamw_8bit
+  seed: 13
+
+wandb:
+  enabled: true
+  project: smart-github-pr-analyzer
+  run_name: v1.3-deepseek-6.7b-qlora-trl-3ep
+
+output: {dir: runs/v1.3}

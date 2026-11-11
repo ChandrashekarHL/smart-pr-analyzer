@@ -56,14 +56,25 @@ class Client:
     def health(self) -> dict:
         return self._request("GET", "/health")
 
+    def generate(self, messages: list[dict], max_new_tokens: int = 384,
+                 adapter: bool = True, retries: int = 3) -> dict:
+        """Free-form generation (`/generate`), e.g. the security pass with
+        `adapter=False` (the base model). Retries 5xx like `review`."""
+        return self._with_retries("/generate", {"messages": messages,
+                                                "max_new_tokens": max_new_tokens,
+                                                "adapter": adapter}, retries)
+
     def review(self, diff_hunk: str, language: str, context: str | None = None,
                file_path: str | None = None, retries: int = 3) -> dict:
         body = {"diff_hunk": diff_hunk, "language": language, "context": context,
                 "file_path": file_path}
+        return self._with_retries("/review", body, retries)
+
+    def _with_retries(self, path: str, body: dict, retries: int) -> dict:
         delay = 2.0
         for attempt in range(1, retries + 1):
             try:
-                return self._request("POST", "/review", body)
+                return self._request("POST", path, body)
             except (urllib.error.URLError, TimeoutError, APIError) as e:
                 # 4xx is the caller's fault; retrying will not help.
                 if isinstance(e, APIError) and 400 <= e.status < 500:

@@ -11,7 +11,7 @@ from pathlib import Path
 from prana_app.config import Settings
 from prana_app.diff import Hunk
 from prana_app.github import GitHubApp
-from prana_app.pipeline import Policy, RetrieveFn
+from prana_app.pipeline import Policy, RetrieveFn, ScanFn
 from prana_app.store import Store
 
 log = logging.getLogger("prana_app")
@@ -26,6 +26,7 @@ class Services:
     policy: Policy
     model: object
     retrieve: RetrieveFn | None
+    scan: ScanFn | None = None
 
 
 def model_fn(settings: Settings):
@@ -53,6 +54,14 @@ def retrieve_fn(settings: Settings) -> RetrieveFn | None:
     return run
 
 
+def scan_fn(settings: Settings) -> ScanFn | None:
+    """Semgrep over the PR's changed files, or None when disabled."""
+    if not settings.semgrep_enabled:
+        return None
+    from prana_app.semgrep_scan import scan
+    return functools.partial(scan, configs=settings.semgrep_configs)
+
+
 @functools.lru_cache(maxsize=1)
 def services() -> Services:
     s = Settings.from_env()
@@ -65,4 +74,5 @@ def services() -> Services:
         policy=Policy(s.max_hunks, s.time_budget_s, s.min_confidence, s.bot_login),
         model=model_fn(s),
         retrieve=retrieve_fn(s),
+        scan=scan_fn(s),
     )

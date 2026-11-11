@@ -40,6 +40,7 @@ from prana.serve import LANGUAGES
 
 MAX_DIFF_CHARS = 20_000
 MAX_CONTEXT_CHARS = 4_000          # about 800-1,000 tokens of English and code
+MAX_GENERATE_TOKENS = 512          # /generate is for short auxiliary passes
 DEFAULT_KEY_FILE = Path.home() / ".config" / "prana" / "api.key"
 
 log = logging.getLogger("prana.api")
@@ -64,6 +65,15 @@ def create_app(reviewer, api_key: str):
         language: str
         context: str | None = Field(default=None, max_length=MAX_CONTEXT_CHARS)
         file_path: str | None = Field(default=None, max_length=500)
+
+    class Message(BaseModel):
+        role: str = Field(pattern="^(system|user|assistant)$")
+        content: str = Field(min_length=1, max_length=MAX_DIFF_CHARS)
+
+    class GenerateRequest(BaseModel):
+        messages: list[Message] = Field(min_length=1, max_length=8)
+        max_new_tokens: int = Field(default=384, ge=1, le=MAX_GENERATE_TOKENS)
+        adapter: bool = True
 
     app = FastAPI(title="prana reviewer", version="1.1")
     gpu = threading.Lock()
@@ -120,6 +130,35 @@ def create_app(reviewer, api_key: str):
             "gen_s": body.get("latency_s"), "total_s": body["total_s"],
         }))
         return body
+
+    @app.post("/generate", dependencies=[Depends(check_key)])
+    def generate(req: GenerateRequest, request: Request):
+        """Free-form generation for auxiliary passes (e.g. the security pass,
+        which runs the base model: `adapter: false`). Same key, same GPU
+        lock, bounded input and output."""
+        if sum(len(m.content) for m in req.messages) > MAX_DIFF_CHARS + MAX_CONTEXT_CHARS:
+            raise HTTPException(status_code=422, detail="messages too long")
+        if not hasattr(reviewer, "generate_raw"):
+            raise HTTPException(status_code=501, detail="generation not supported")
+        with state_lock:
+            state["waiting"] += 1
+        queued = time.perf_counter()
+        try:
+            with gpu:
+                with state_lock:
+                    state["waiting"] -= 1
+                out = reviewer.generate_raw([m.model_dump() for m in req.messages],
+                                            req.max_new_tokens, req.adapter)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        with state_lock:
+            state["served"] += 1
+        out["total_s"] = round(time.perf_counter() - queued, 3)
+        log.info(json.dumps({"route": "generate", "adapter": req.adapter,
+                             "client": request.client.host if request.client else None,
+                             "chars": sum(len(m.content) for m in req.messages),
+                             "total_s": out["total_s"]}))
+        return out
 
     return app
 

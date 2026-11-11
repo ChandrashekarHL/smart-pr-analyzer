@@ -226,6 +226,36 @@ class Reviewer:
         )
 
 
+    def generate_raw(self, messages: list[dict[str, str]], max_new_tokens: int = 384,
+                     use_adapter: bool = True) -> dict:
+        """Free-form chat generation for auxiliary passes (the security pass).
+        `use_adapter=False` runs the plain base model through PEFT's
+        `disable_adapter()`: the same weights in memory, no second copy. Greedy,
+        so results are reproducible. Not the review contract: callers own their
+        prompt and parse the output themselves."""
+        import contextlib
+
+        import torch
+
+        if not messages or not all(isinstance(m, dict) and m.get("content") for m in messages):
+            raise ValueError("messages must be a non-empty list of {role, content}")
+        prompt = self.tokenizer.apply_chat_template(messages, tokenize=False,
+                                                    add_generation_prompt=True)
+        enc = self.tokenizer(prompt, return_tensors="pt", truncation=True,
+                             max_length=2048).to(self.model.device)
+        no_adapter = getattr(self.model, "disable_adapter", None)
+        ctx = no_adapter() if (not use_adapter and no_adapter) else contextlib.nullcontext()
+        started = time.perf_counter()
+        with torch.no_grad(), ctx:
+            out = self.model.generate(**enc, max_new_tokens=max_new_tokens, do_sample=False,
+                                      pad_token_id=self.tokenizer.pad_token_id)
+        gen = out[0, enc["input_ids"].shape[1]:]
+        return {"text": clean_completion(self.tokenizer.decode(gen, skip_special_tokens=True)),
+                "latency_s": round(time.perf_counter() - started, 3),
+                "adapter_used": bool(no_adapter is not None and use_adapter),
+                "prompt_truncated": int(enc["input_ids"].shape[1]) >= 2048}
+
+
 def create_app(reviewer: Reviewer):
     """Minimal HTTP wrapper for the backend lead. FastAPI is optional: the
     core package stays dependency-free and this import only runs here."""

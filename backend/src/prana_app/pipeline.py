@@ -31,6 +31,10 @@ log = logging.getLogger("prana_app.pipeline")
 
 ModelFn = Callable[[str, str, str | None, str | None], dict]   # (hunk, lang, ctx, path) -> result
 RetrieveFn = Callable[[Hunk, str, int, str], str]              # (hunk, repo, pr, base_sha) -> ctx
+ScanFn = Callable[[dict[str, str]], dict[str, list]]           # {path: text} -> {path: findings}
+
+MAX_SCAN_FILES = 10
+SCAN_GRACE_S = 15.0       # extra wait for Semgrep after the model calls, if still running
 
 
 class ModelUnavailable(RuntimeError):
@@ -53,15 +57,65 @@ class Outcome:
     hunks_failed: int = 0
     hunks_skipped_time: int = 0
     duplicates: int = 0
+    rule_findings: int = 0          # Semgrep findings on added lines (before dedup)
     posted: list[Finding] = field(default_factory=list)
     low_confidence: list[Finding] = field(default_factory=list)
     review_id: int | None = None
     seconds: float = 0.0
 
 
+def _start_scan(gh, scan: ScanFn, repo: str, head_sha: str, files: list[dict]):
+    """Fetch the changed source files at the head commit and start the rule
+    scan in a background thread. Returns (thread, result holder)."""
+    import threading
+
+    from prana_app.diff import language_for
+    paths = [f["filename"] for f in files
+             if f.get("status") != "removed" and language_for(f.get("filename", ""))]
+    holder: dict = {}
+
+    def run():
+        try:
+            texts = {}
+            for p in paths[:MAX_SCAN_FILES]:
+                text = gh.file_content(repo, p, head_sha)
+                if text is not None:
+                    texts[p] = text
+            holder["result"] = scan(texts) if texts else {}
+        except Exception as e:  # noqa: BLE001 - rules are an extra; never fail the review
+            log.warning("rule scan failed for %s: %s", repo, e)
+            holder["result"] = {}
+    t = threading.Thread(target=run, name="prana-scan", daemon=True)
+    t.start()
+    return t, holder
+
+
+def _rule_findings(scanned: dict[str, list], files: list[dict]) -> list[Finding]:
+    """Rule hits on lines this PR added - pre-existing code is not this PR's to fix."""
+    from prana_app.diff import language_for, parse_patch
+    added: dict[str, set[int]] = {}
+    for f in files:
+        lang = language_for(f.get("filename", ""))
+        if lang and f.get("patch"):
+            added[f["filename"]] = {n for h in parse_patch(f["filename"], f["patch"], lang)
+                                    for n in h.added}
+    out = []
+    for path, hits in scanned.items():
+        for h in hits:
+            if h.line not in added.get(path, set()):
+                continue
+            out.append(Finding(
+                path=path, line=h.line, line_exact=True,
+                severity="critical" if h.severity in ("error", "critical") else "warning",
+                issue_type="SECURITY", explanation=h.message, suggestion="",
+                confidence=1.0, rule=h.rule))
+    return out
+
+
 def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: int,
                         head_sha: str, retrieve: RetrieveFn | None = None,
-                        clock: Callable[[], float] = time.monotonic) -> Outcome:
+                        clock: Callable[[], float] = time.monotonic,
+                        scan: ScanFn | None = None) -> Outcome:
     started = clock()
     pr = gh.pull_request(repo, number)
     if pr.get("head", {}).get("sha") != head_sha:
@@ -74,11 +128,13 @@ def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: i
             return Outcome("already_posted", review_id=r.get("id"), seconds=clock() - started)
     base_sha = pr.get("base", {}).get("sha", "")
 
-    hunks, total = reviewable_hunks(gh.pull_files(repo, number), policy.max_hunks)
+    files = gh.pull_files(repo, number)
+    hunks, total = reviewable_hunks(files, policy.max_hunks)
     out = Outcome("no_hunks", hunks_total=total)
     if not hunks:
         out.seconds = clock() - started
         return out
+    scan_thread = _start_scan(gh, scan, repo, head_sha, files) if scan else None
 
     findings: list[Finding] = []
     per_hunk = 0.0
@@ -111,6 +167,13 @@ def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: i
 
     if out.hunks_reviewed == 0 and out.hunks_failed:
         raise ModelUnavailable(f"all {out.hunks_failed} model calls failed")
+
+    if scan_thread is not None:
+        thread, holder = scan_thread
+        thread.join(timeout=SCAN_GRACE_S)
+        rules = _rule_findings(holder.get("result") or {}, files)
+        out.rule_findings = len(rules)
+        findings.extend(rules)
 
     existing = [c for c in gh.review_comments(repo, number)]
     for f in findings:

@@ -164,7 +164,8 @@ class Store:
                                     line_exact=f.line_exact, severity=f.severity,
                                     issue_type=f.issue_type, confidence=f.confidence,
                                     inline=inline, fingerprint=f.fingerprint,
-                                    summary=" ".join(f.explanation.split())[:300]))
+                                    summary=" ".join(f.explanation.split())[:300],
+                                    extra={"rule": f.rule} if getattr(f, "rule", "") else None))
             s.commit()
 
     # ------------------------------------------------------------- feedback

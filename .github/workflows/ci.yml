@@ -47,7 +47,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: {python-version: "3.12", cache: pip}
-      - run: pip install -r requirements.txt -r dashboard/requirements.txt pytest==9.2.0 ruff==0.17.3
+      - run: pip install -r requirements.txt -r dashboard/requirements.txt pytest==9.2.0 ruff==0.17.3 langchain-core==1.7.3
       - run: ruff check src tests dashboard
       - run: python -m pytest -p no:warnings
         env:

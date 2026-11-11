@@ -63,6 +63,9 @@ class Settings:
     # orgs, lower case) get reviews. Empty = everyone. The GPU is shared, so
     # production should list the team's accounts.
     allowed_owners: frozenset[str] = frozenset()
+    # Semgrep security rules beside the model (benchmark: detection 24% -> 58%).
+    semgrep_enabled: bool = True
+    semgrep_configs: tuple[str, ...] = ("p/default", "p/secrets")
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -86,6 +89,9 @@ class Settings:
             bot_login=os.environ.get("BOT_LOGIN", "prana-reviewer[bot]"),
             github_api=os.environ.get("GITHUB_API", "https://api.github.com").rstrip("/"),
             allowed_owners=parse_owners(os.environ.get("ALLOWED_OWNERS", "")),
+            semgrep_enabled=os.environ.get("SEMGREP_ENABLED", "1") == "1",
+            semgrep_configs=tuple(c.strip() for c in os.environ.get(
+                "SEMGREP_CONFIGS", "p/default,p/secrets").split(",") if c.strip()),
         )
 
 

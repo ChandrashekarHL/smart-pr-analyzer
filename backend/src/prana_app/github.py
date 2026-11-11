@@ -155,6 +155,25 @@ class GitHubClient:
     def review_comments(self, repo: str, number: int) -> list[dict]:
         return self._paginate(f"/repos/{repo}/pulls/{number}/comments")
 
+    def file_content(self, repo: str, path: str, ref: str,
+                     max_bytes: int = 1_000_000) -> str | None:
+        """A file's text at a commit, or None if missing, binary or too large."""
+        import base64
+        try:
+            body = self._request("GET", f"/repos/{repo}/contents/{path}",
+                                 params={"ref": ref}).json()
+        except GitHubError as e:
+            if e.status == 404:
+                return None
+            raise
+        if not isinstance(body, dict) or body.get("encoding") != "base64" \
+                or int(body.get("size") or 0) > max_bytes:
+            return None
+        raw = base64.b64decode(body.get("content") or "")
+        if b"\x00" in raw[:4096]:
+            return None
+        return raw.decode("utf-8", "replace")
+
     def reviews(self, repo: str, number: int) -> list[dict]:
         return self._paginate(f"/repos/{repo}/pulls/{number}/reviews")
 

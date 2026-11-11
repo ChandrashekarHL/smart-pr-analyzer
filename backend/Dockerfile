@@ -18,6 +18,19 @@ WORKDIR /app
 COPY backend/requirements.txt backend/requirements.txt
 RUN pip install -r backend/requirements.txt
 
+# Semgrep is a CLI with its own heavy dependencies (they conflict with the
+# app's pins), so it lives in an isolated venv and only the command is exposed.
+# Rule packs are fetched once at build time: reviews never download rules and
+# the image pins the exact rules it was built with.
+RUN python -m venv /opt/semgrep-venv \
+ && /opt/semgrep-venv/bin/pip install semgrep==1.183.0 \
+ && ln -s /opt/semgrep-venv/bin/semgrep /usr/local/bin/semgrep \
+ && mkdir -p /opt/semgrep \
+ && python -c "import urllib.request as u; [u.urlretrieve(f'https://semgrep.dev/c/p/{p}', f'/opt/semgrep/{p}.yml') for p in ('default', 'secrets')]" \
+ && semgrep scan --metrics off --quiet --config /opt/semgrep/default.yml --config /opt/semgrep/secrets.yml /dev/null
+ENV SEMGREP_CONFIGS=/opt/semgrep/default.yml,/opt/semgrep/secrets.yml \
+    SEMGREP_SEND_METRICS=off
+
 # The model-side package is needed only for its stdlib client and retrieval
 # contract; nothing here imports torch.
 COPY src/prana src/prana

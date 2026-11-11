@@ -61,6 +61,49 @@ def clean_completion(text: str) -> str:
     return _SPECIAL_MARKER.sub("", text).strip()
 
 
+def unscaled_rope_config(model_name: str):
+    """The base config with linear RoPE scaling removed (rope_type 'default',
+    same theta): what Unsloth actually trained with."""
+    from transformers import AutoConfig
+    cfg = AutoConfig.from_pretrained(model_name)
+    params = dict(getattr(cfg, "rope_parameters", None) or getattr(cfg, "rope_scaling", None) or {})
+    theta = params.get("rope_theta") or getattr(cfg, "rope_theta", None) or 10000.0
+    unscaled = {"rope_type": "default", "rope_theta": theta}
+    if hasattr(cfg, "rope_parameters"):
+        cfg.rope_parameters = unscaled
+    cfg.rope_scaling = None if not hasattr(cfg, "rope_parameters") else unscaled
+    return cfg
+
+
+def mbr_select(candidates: list[str]) -> str:
+    """Minimum-Bayes-risk choice among sampled reviews: the candidate whose
+    prose agrees most (mean ROUGE-L) with the other candidates. Valid
+    structured outputs are preferred; ties go to the earliest candidate, so
+    the choice is deterministic for a given set of samples. It never looks at
+    the reference."""
+    from prana.eval.score import rouge_l_scores
+    from prana.schema import parse_structured
+
+    parsed = [parse_structured(c) for c in candidates]
+    pool = [i for i, p in enumerate(parsed) if p.schema_valid] or list(range(len(candidates)))
+    if len(pool) == 1:
+        return candidates[pool[0]]
+
+    def prose(i: int) -> str:
+        p = parsed[i]
+        if p.schema_valid and p.data:
+            return f"{p.data.get('explanation') or ''} {p.data.get('suggestion') or ''}"
+        return candidates[i]
+    texts = [prose(i) for i in pool]
+    pairs = [(a, b) for a in range(len(pool)) for b in range(len(pool)) if a != b]
+    scores = rouge_l_scores([texts[a] for a, _ in pairs], [texts[b] for _, b in pairs])
+    totals = [0.0] * len(pool)
+    for (a, _), s in zip(pairs, scores, strict=True):
+        totals[a] += s
+    best = max(range(len(pool)), key=lambda i: (totals[i], -i))
+    return candidates[pool[best]]
+
+
 def batches(rows: list[dict], size: int):
     for i in range(0, len(rows), size):
         yield rows[i : i + size]
@@ -150,6 +193,18 @@ def main() -> None:
     ap.add_argument("--temperature", type=float, default=0.0,
                     help="0 means greedy; keep it there so a baseline "
                          "is reproducible")
+    ap.add_argument("--num-beams", type=int, default=1,
+                    help="beam search width; 1 = greedy")
+    ap.add_argument("--mbr-samples", type=int, default=0,
+                    help="minimum-Bayes-risk decoding: sample this many reviews per "
+                         "row and keep the consensus one (0 = off)")
+    ap.add_argument("--mbr-temperature", type=float, default=0.7)
+    ap.add_argument("--seed", type=int, default=13)
+    ap.add_argument("--rope", choices=["config", "unscaled"], default="config",
+                    help="'unscaled' drops the base config's linear RoPE scaling. Unsloth "
+                         "trained every adapter so far with unscaled RoPE (it logs a "
+                         "fallback), while plain transformers applies the scaling: this "
+                         "flag measures that train/serve mismatch")
     ap.add_argument("--with-context", action="store_true",
                     help="fill the RAG slot from each row's rag_context field")
     ap.add_argument("--dtype", default="auto",
@@ -191,7 +246,11 @@ def main() -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    model = AutoModelForCausalLM.from_pretrained(args.model, **dtype_kwarg(dtype)).to(device)
+    extra = {}
+    if args.rope == "unscaled":
+        extra["config"] = unscaled_rope_config(args.model)
+    model = AutoModelForCausalLM.from_pretrained(args.model, **dtype_kwarg(dtype),
+                                                 **extra).to(device)
     if args.adapter:
         from peft import PeftModel
         model = PeftModel.from_pretrained(model, args.adapter)
@@ -202,7 +261,11 @@ def main() -> None:
         "prompt_version": version, "prompt_fingerprint": fingerprint(version),
         "with_context": args.with_context, "temperature": args.temperature,
         "max_new_tokens": args.max_new_tokens, "device": device, "dtype": str(dtype),
+        "num_beams": args.num_beams, "mbr_samples": args.mbr_samples, "rope": args.rope,
+        "mbr_temperature": args.mbr_temperature if args.mbr_samples else None,
+        "seed": args.seed,
     }
+    torch.manual_seed(args.seed)
     (outdir / f"{args.split}.run.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     started = time.time()
@@ -213,20 +276,32 @@ def main() -> None:
             enc = tokenizer(prompts, return_tensors="pt", padding=True,
                             truncation=True, max_length=2048).to(device)
 
+            k = args.mbr_samples
             with torch.no_grad():
-                out = model.generate(
-                    **enc,
-                    max_new_tokens=args.max_new_tokens,
-                    do_sample=args.temperature > 0,
-                    temperature=args.temperature if args.temperature > 0 else None,
-                    pad_token_id=tokenizer.pad_token_id,
-                )
+                if k:
+                    out = model.generate(
+                        **enc, max_new_tokens=args.max_new_tokens, do_sample=True,
+                        temperature=args.mbr_temperature, num_return_sequences=k,
+                        pad_token_id=tokenizer.pad_token_id)
+                else:
+                    out = model.generate(
+                        **enc,
+                        max_new_tokens=args.max_new_tokens,
+                        do_sample=args.temperature > 0,
+                        temperature=args.temperature if args.temperature > 0 else None,
+                        num_beams=args.num_beams,
+                        pad_token_id=tokenizer.pad_token_id,
+                    )
 
             # Slice off the prompt: with left padding every sequence in the
             # batch shares the same input width, so one offset is correct.
             completions = tokenizer.batch_decode(
                 out[:, enc["input_ids"].shape[1]:], skip_special_tokens=True
             )
+            if k:
+                # num_return_sequences keeps each row's k samples together.
+                completions = [mbr_select([clean_completion(c) for c in completions[i:i + k]])
+                               for i in range(0, len(completions), k)]
 
             for row, text in zip(batch, completions, strict=True):
                 sink.write(jsonl.dumps({

@@ -217,3 +217,36 @@ def test_only_transient_errors_are_retried(monkeypatch):
     assert retried == []
     run(ModelUnavailable("down"), RuntimeError)            # the stub's "retry" exception
     assert len(retried) == 1 and isinstance(retried[0], ModelUnavailable)
+
+
+# ------------------------------------------------- Semgrep beside the model
+
+def _hit(line, rule="python.lang.security.audit.formatted-sql-query", sev="error"):
+    from prana_app.semgrep_scan import SemgrepFinding
+    return SemgrepFinding(rule=rule, line=line, severity=sev,
+                          message="Detected SQL built with string formatting.")
+
+
+def test_rule_findings_on_added_lines_are_posted_with_their_rule(gh):
+    seen = {}
+
+    def scan(files):
+        seen.update(files)
+        return {"app/api.py": [_hit(12), _hit(30, rule="old.code")]}   # 30 is not added
+    out = review_pull_request(gh, FakeModel(), Policy(), "o/r", 5, "h1", scan=scan)
+    assert set(seen) == {"app/api.py"}                       # README not scanned
+    assert seen["app/api.py"].startswith("# full text of app/api.py at h1")
+    rules = [f for f in out.posted if f.rule]
+    assert out.rule_findings == 1 and len(rules) == 1
+    assert (rules[0].line, rules[0].issue_type, rules[0].severity) == (12, "SECURITY", "critical")
+    body = rules[0].body()
+    assert "Semgrep rule <code>python.lang.security.audit.formatted-sql-query</code>" in body
+    assert "confidence" not in body
+    assert "1 of these come from Semgrep security rules." in gh.posted[0]["body"]
+
+
+def test_a_failing_scanner_never_breaks_the_review(gh):
+    def scan(files):
+        raise RuntimeError("semgrep crashed")
+    out = review_pull_request(gh, FakeModel(), Policy(), "o/r", 5, "h1", scan=scan)
+    assert out.status == "posted" and out.rule_findings == 0

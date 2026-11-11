@@ -22,6 +22,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+# The LangChain security pass and its evaluation (off in production).
+security-eval = ["langchain-core>=1.7"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

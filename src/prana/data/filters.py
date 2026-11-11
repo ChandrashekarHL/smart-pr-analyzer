@@ -18,7 +18,9 @@ from prana.config import EXT_LANG
 #   2  author-reply removal
 #   3  machine-translated review wrapper (cherry-studio template)
 #   4  AI-tool markup under personal accounts (priority badges, metadata headers)
-FILTERS_VERSION = 4
+#   5  two more anonymised AI reviewers and their markup (shields.io P-badges,
+#      "**[LEVEL/category]**" headers) - 95 rows had leaked into corpus v1.1
+FILTERS_VERSION = 5
 
 # --------------------------------------------------------------- authorship
 
@@ -47,6 +49,12 @@ BOT_REVIEWERS: frozenset[str] = frozenset({
     # No person reviews that spread. Uniform phrasing, exact file:line
     # citations, 53-word mean against 81 for named humans.
     "49f5b0e4",
+    # Found 2026-10-30 while auditing the issue-detection judge: anonymised
+    # accounts posting AI-review output. 2dc80ef9 (95 rows in v1.1, 38 of them
+    # in test_ood) uses Codex-style "P1/P2" shields.io badges; 56ec8c27 opens
+    # with "**[WARNING/test]**"-style headers and "Blast radius" sections.
+    "2dc80ef9",
+    "56ec8c27",
 })
 
 
@@ -83,7 +91,12 @@ BOT_MARKUP = re.compile(
     # with cubic's `<!-- metadata:{"confidence":8,...} -->` header. Both are
     # findings, so the teacher's is_review keeps them; only the markup tells.
     r"<!--\s*metadata:|"
-    r"^\s*\*\*\[P[0-4]\b)",
+    r"^\s*\*\*\[P[0-4]\b|"
+    # v5: the same tools' other markup, structural only.
+    r"img\.shields\.io/badge/P[0-4]-|"
+    # Multiline scoped to this rule only, so the v4 rules above match exactly
+    # as before.
+    r"(?m:^\s*\*\*\[(?:ERROR|WARNING|INFO|NOTE|CRITICAL)/[a-z_ -]+\]))",
     re.I,
 )
 

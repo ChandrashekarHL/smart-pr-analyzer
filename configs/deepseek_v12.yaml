@@ -1,0 +1,64 @@
+# v1.2 - v1.1's recipe with four deliberate changes, each aimed at a measured
+# weakness (2026-10-30/31 evaluation):
+#   train.trainer: trl        TRL SFTTrainer (prompt/completion, completion-only
+#                             loss, TRL packing); parity-checked against the
+#                             custom trainer by scripts/trl_parity.sh first
+#   data.drop_bot_rows        filters v5: 53 AI-reviewer rows had leaked into train
+#   data.oversample SECURITY  security is 2.4% of rows; detection 25-38%
+#   context_dropout: 1.0      train without retrieval context, as it is served
+#                             (context hurt in ablation B)
+#   epochs: 2                 TRL's padding-free packing (each example attends
+#                             only to itself) measured 2x slower per epoch than
+#                             the custom trainer (parity run 2026-10-31); v1.1's
+#                             eval loss had plateaued by epoch 2.5
+# Everything else - data, prompt v2, LoRA, LR 1e-4 - is unchanged, so the
+# paired comparison with v1.1 stays interpretable.
+# (Unsloth's "falling back to unscaled RoPE" warning is cosmetic: measured.)
+model:
+  name: deepseek-ai/deepseek-coder-6.7b-instruct
+  dtype: bfloat16
+  load_in_4bit: true
+  bnb_quant_type: nf4
+  bnb_double_quant: true
+  attn_implementation: sdpa
+  use_unsloth: true
+
+data:
+  dir: data/v1.1
+  target_field: target_text
+  max_seq_length: 2048
+  packing: true
+  packing_strategy: bfd
+  context_dropout: 1.0
+  drop_bot_rows: true
+  oversample: {SECURITY: 3}
+
+lora:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules: null
+
+train:
+  trainer: trl
+  batch_size: 8
+  grad_accum: 4
+  epochs: 2
+  lr: 0.0001
+  scheduler: cosine
+  warmup_ratio: 0.03
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_steps: 50
+  save_total_limit: 3
+  eval_steps: 50
+  gradient_checkpointing: true
+  optim: paged_adamw_8bit
+  seed: 13
+
+wandb:
+  enabled: true
+  project: smart-github-pr-analyzer
+  run_name: v1.2-deepseek-6.7b-qlora-trl-security
+
+output: {dir: runs/v1.2}

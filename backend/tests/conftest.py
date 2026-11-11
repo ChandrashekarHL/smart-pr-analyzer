@@ -77,6 +77,9 @@ class FakeGitHub:
     def reviews(self, repo, number):
         return self.posted
 
+    def file_content(self, repo, path, ref):
+        return f"# full text of {path} at {ref}\n"
+
     def issue_comment(self, repo, number, body):
         self.issue_comments.append(body)
         return {"id": 7}
