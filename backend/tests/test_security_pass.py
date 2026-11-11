@@ -128,3 +128,30 @@ def test_go_file_with_its_own_package_clause_is_not_given_a_second_one():
     go = ('package main\n\nimport "crypto/tls"\n\n'
           "func c() *tls.Config {\n\treturn &tls.Config{InsecureSkipVerify: true}\n}\n")
     assert scan({"c.go": go}).get("c.go"), "a parse error would hide the TLS finding"
+
+
+def test_semgrep_metadata_reaches_the_finding(tmp_path):
+    import sys
+
+    from prana_app.semgrep_scan import scan
+    # A stand-in for the CLI: answers like `semgrep scan --json` for the
+    # temporary directory it is given (the last argument).
+    result = {"check_id": "py.pickle", "start": {"line": 3}, "extra": {
+        "severity": "ERROR", "message": "Avoid pickle.",
+        "metadata": {"cwe": ["CWE-502: Deserialization of Untrusted Data"],
+                     "owasp": "A08:2021 - Software and Data Integrity Failures",
+                     "shortlink": "https://sg.run/abc"}}}
+    fake = tmp_path / "semgrep"
+    fake.write_text("\n".join([
+        f"#!{sys.executable}",
+        "import json, sys",
+        f"r = {result!r}",
+        "r['path'] = sys.argv[-1] + '/a.py'",
+        "print(json.dumps({'results': [r]}))",
+    ]) + "\n", encoding="utf-8")
+    fake.chmod(0o755)
+    (hit,) = scan({"a.py": "import pickle\n\npickle.loads(x)\n"}, semgrep=str(fake))["a.py"]
+    assert (hit.rule, hit.line, hit.severity) == ("py.pickle", 3, "error")
+    assert hit.cwe == ("CWE-502: Deserialization of Untrusted Data",)
+    assert hit.owasp == ("A08:2021 - Software and Data Integrity Failures",)
+    assert hit.url == "https://sg.run/abc"

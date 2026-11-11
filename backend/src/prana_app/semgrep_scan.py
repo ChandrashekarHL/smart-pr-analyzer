@@ -38,6 +38,16 @@ class SemgrepFinding:
     line: int
     severity: str
     message: str
+    cwe: tuple[str, ...] = ()       # "CWE-502: Deserialization of Untrusted Data"
+    owasp: tuple[str, ...] = ()     # "A08:2021 - Software and Data Integrity Failures"
+    url: str = ""                   # the rule's page
+
+
+def _strings(value) -> tuple[str, ...]:
+    """Semgrep metadata fields are a string or a list of strings."""
+    if isinstance(value, str):
+        value = [value]
+    return tuple(" ".join(str(v).split()) for v in (value or []) if str(v).strip())[:3]
 
 
 def scan(files: dict[str, str], configs: tuple[str, ...] = DEFAULT_CONFIGS,
@@ -80,8 +90,12 @@ def scan(files: dict[str, str], configs: tuple[str, ...] = DEFAULT_CONFIGS,
                 continue
             line = int(r.get("start", {}).get("line", 0)) - offsets.get(path.as_posix(), 0)
             extra = r.get("extra", {})
+            meta = extra.get("metadata") or {}
+            url = meta.get("shortlink") or meta.get("source") or ""
             out.setdefault(rel, []).append(SemgrepFinding(
                 rule=r.get("check_id", "?"), line=max(line, 1),
                 severity=str(extra.get("severity", "WARNING")).lower(),
-                message=" ".join(str(extra.get("message", "")).split())[:300]))
+                message=" ".join(str(extra.get("message", "")).split())[:300],
+                cwe=_strings(meta.get("cwe")), owasp=_strings(meta.get("owasp")),
+                url=url if isinstance(url, str) and url.startswith("https://") else ""))
         return out

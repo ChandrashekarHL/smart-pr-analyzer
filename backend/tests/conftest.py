@@ -55,7 +55,7 @@ class FakeGitHub:
         self.existing = existing or []
         self.reject_inline = reject_inline
         self.posted = []          # reviews created through create_review
-        self.issue_comments = []
+        self.conversation = []    # PR conversation comments: {id, user, body}
 
     def pull_request(self, repo, number):
         return {"head": {"sha": self.head}, "base": {"sha": "b1"}}
@@ -81,8 +81,21 @@ class FakeGitHub:
         return f"# full text of {path} at {ref}\n"
 
     def issue_comment(self, repo, number, body):
-        self.issue_comments.append(body)
-        return {"id": 7}
+        self.conversation.append({"id": 7 + len(self.conversation), "body": body,
+                                  "user": {"login": "prana-reviewer[bot]"}})
+        return {"id": self.conversation[-1]["id"]}
+
+    def issue_comments(self, repo, number):
+        return self.conversation
+
+    def update_issue_comment(self, repo, comment_id, body):
+        for c in self.conversation:
+            if c["id"] == comment_id:
+                c["body"] = body
+        return {"id": comment_id}
+
+    def conversation_bodies(self):
+        return [c["body"] for c in self.conversation]
 
 
 def model_result(line=12, severity="critical", issue="SECURITY", confidence=0.8,

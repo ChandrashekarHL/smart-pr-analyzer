@@ -203,3 +203,11 @@ class GitHubClient:
     def issue_comment(self, repo: str, number: int, body: str) -> dict:
         return self._request("POST", f"/repos/{repo}/issues/{number}/comments",
                              json={"body": body}).json()
+
+    def issue_comments(self, repo: str, number: int) -> list[dict]:
+        """The PR's conversation comments (not the inline review comments)."""
+        return self._paginate(f"/repos/{repo}/issues/{number}/comments")
+
+    def update_issue_comment(self, repo: str, comment_id: int, body: str) -> dict:
+        return self._request("PATCH", f"/repos/{repo}/issues/comments/{comment_id}",
+                             json={"body": body}).json()

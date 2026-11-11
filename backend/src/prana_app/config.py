@@ -66,6 +66,8 @@ class Settings:
     # Semgrep security rules beside the model (benchmark: detection 24% -> 58%).
     semgrep_enabled: bool = True
     semgrep_configs: tuple[str, ...] = ("p/default", "p/secrets")
+    # PR walkthrough comment by the base model (~6 s of GPU per review).
+    walkthrough_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -92,6 +94,7 @@ class Settings:
             semgrep_enabled=os.environ.get("SEMGREP_ENABLED", "1") == "1",
             semgrep_configs=tuple(c.strip() for c in os.environ.get(
                 "SEMGREP_CONFIGS", "p/default,p/secrets").split(",") if c.strip()),
+            walkthrough_enabled=os.environ.get("WALKTHROUGH_ENABLED", "1") == "1",
         )
 
 

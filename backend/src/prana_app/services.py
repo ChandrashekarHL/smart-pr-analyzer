@@ -13,6 +13,7 @@ from prana_app.diff import Hunk
 from prana_app.github import GitHubApp
 from prana_app.pipeline import Policy, RetrieveFn, ScanFn
 from prana_app.store import Store
+from prana_app.walkthrough import GenerateFn
 
 log = logging.getLogger("prana_app")
 REPO_CACHE = Path("/var/cache/prana/repos")
@@ -27,6 +28,7 @@ class Services:
     model: object
     retrieve: RetrieveFn | None
     scan: ScanFn | None = None
+    walkthrough: GenerateFn | None = None
 
 
 def model_fn(settings: Settings):
@@ -62,6 +64,19 @@ def scan_fn(settings: Settings) -> ScanFn | None:
     return functools.partial(scan, configs=settings.semgrep_configs)
 
 
+def walkthrough_fn(settings: Settings) -> GenerateFn | None:
+    """The base model (adapter off) through the model API's `/generate`."""
+    if not settings.walkthrough_enabled:
+        return None
+    from prana.client import Client
+    client = Client(settings.model_api_url, settings.model_api_key, timeout=120)
+
+    def run(messages: list[dict]) -> str:
+        return client.generate(messages, max_new_tokens=450, adapter=False,
+                               retries=1).get("text") or ""
+    return run
+
+
 @functools.lru_cache(maxsize=1)
 def services() -> Services:
     s = Settings.from_env()
@@ -75,4 +90,5 @@ def services() -> Services:
         model=model_fn(s),
         retrieve=retrieve_fn(s),
         scan=scan_fn(s),
+        walkthrough=walkthrough_fn(s),
     )

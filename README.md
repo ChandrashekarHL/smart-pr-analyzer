@@ -48,6 +48,12 @@ prana · confidence 0.82
   design document and evaluated twice. It did not help this model, so it stays off.
 - **Model plus rules for security.** Semgrep runs beside the model on every PR.
   Together they find 64% of planted vulnerabilities, against 33% for the model alone.
+- **A walkthrough on every PR.** One conversation comment, edited on each new
+  commit: what the PR does, a per-file table of changes, and what to check closely.
+  Written by the base DeepSeek model on the same GPU; file names and line counts
+  come from GitHub, never from the model. Inline comments carry a category
+  (potential issue, refactor, nitpick, testing), a suggestion, and why they were
+  flagged, with CWE and OWASP references for Semgrep findings.
 
 ## Results
 

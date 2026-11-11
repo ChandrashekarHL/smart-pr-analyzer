@@ -54,7 +54,8 @@ def run_review(svc, run_id: int, attempt: int) -> str:
     try:
         outcome = review_pull_request(gh, svc.model, svc.policy, run.repo, run.pr_number,
                                       run.head_sha, svc.retrieve,
-                                      scan=getattr(svc, "scan", None))
+                                      scan=getattr(svc, "scan", None),
+                                      walkthrough=getattr(svc, "walkthrough", None))
     except Exception as e:  # noqa: BLE001 - classified below
         if _transient(e) and attempt < MAX_RETRIES:
             svc.store.mark(run_id, "pending", error=f"attempt {attempt + 1}: {e}")

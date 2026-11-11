@@ -3,7 +3,7 @@ from __future__ import annotations
 from conftest import PATCH, model_result
 
 from prana_app.diff import language_for, parse_patch, reviewable_hunks
-from prana_app.review import Finding, finding_from, is_duplicate, summary
+from prana_app.review import Finding, category, finding_from, is_duplicate, summary
 from prana_app.security import sign, verify_signature
 
 
@@ -57,7 +57,8 @@ def test_finding_and_comment_body():
     assert (f.path, f.line, f.line_exact, f.severity) == ("app/api.py", 12, False, "critical")
     c = f.as_github_comment()
     assert c["side"] == "RIGHT" and c["line"] == 12
-    assert "critical · SECURITY" in c["body"] and "line approximate" in c["body"]
+    assert "**🔴 Critical** · ⚠️ Potential issue · `SECURITY`" in c["body"]
+    assert "line approximate" in c["body"] and "confidence 0.80" in c["body"]
     assert f"<!-- prana:{f.fingerprint} -->" in c["body"]
     assert finding_from(h1, {"parsed": None, "text": "garbage"}) is None
 
@@ -107,3 +108,48 @@ def test_summary_reports_counts_and_what_was_left_out():
     assert "2 smaller hunks were not reviewed" in s and "2 hunks skipped" in s
     assert "1 hunks had no usable model output" in s and "1 comments suppressed" in s
     assert "Low-confidence suggestions (1)" in s
+
+
+def test_comments_posted_in_the_old_format_are_still_recognised():
+    # Format used until 2026-11-11; those comments are still on open PRs.
+    old = ("🟠 **warning · BUG** — Guard against None before indexing.\n"
+           "\n**Suggestion:** Check first.\n"
+           "\n<sub>prana · confidence 0.70</sub>\n"
+           "<!-- prana:0123456789abcdef -->")
+    assert is_duplicate(_f(line=11), [{"path": "a.py", "line": 11, "body": old}])
+    rule_old = ("🔴 **critical · SECURITY** — Avoid pickle.\n"
+                "\n<sub>prana · Semgrep rule <code>py.pickle</code></sub>")
+    assert is_duplicate(_f(rule="py.pickle", explanation="Different words entirely here."),
+                        [{"path": "a.py", "line": 10, "body": rule_old}])
+
+
+def test_semgrep_comment_cites_the_rule_cwe_and_owasp():
+    f = _f(severity="critical", issue_type="SECURITY", rule="py.pickle",
+           explanation="Avoid pickle on untrusted data.", url="https://sg.run/abc",
+           cwe=("CWE-502: Deserialization of Untrusted Data",),
+           owasp=("A08:2021 - Software and Data Integrity Failures",))
+    body = f.body()
+    assert body.startswith("**🔴 Critical** · ⚠️ Potential issue · `SECURITY`")
+    assert "Semgrep rule <code>py.pickle</code> ([rule](https://sg.run/abc))" in body
+    assert "- CWE-502: Deserialization of Untrusted Data" in body
+    assert "- OWASP A08:2021" in body and "confidence" not in body
+    assert "<summary>Why this was flagged</summary>" in body
+
+
+def test_category_is_what_a_reader_skims_for():
+    assert category("critical", "SECURITY") == "⚠️ Potential issue"
+    assert category("info", "BUG") == "🛠️ Refactor suggestion"
+    assert category("info", "STYLE") == "🧹 Nitpick"
+    assert category("warning", "TEST") == "🧪 Testing"
+
+
+def test_summary_has_a_per_file_table_and_review_details():
+    posted = [_f(severity="critical"), _f(path="b.py", severity="info"),
+              _f(path="b.py", severity="info", rule="r1")]
+    s = summary(posted, [], reviewed=2, total=2, failed=0, skipped_for_time=0, duplicates=0,
+                head_sha="abcdef1234", adapter="runs/v1.3/adapter")
+    assert "**Comments posted: 3**" in s
+    assert "| `a.py` | 1 |  |  |" in s and "| `b.py` |  |  | 2 |" in s
+    assert "Commit `abcdef1`" in s and "`runs/v1.3/adapter`" in s and "Semgrep" in s
+    s = summary([], [], reviewed=1, total=1, failed=0, skipped_for_time=0, duplicates=0)
+    assert "**No inline comments.**" in s and "Review details" not in s

@@ -122,11 +122,12 @@ def test_worker_transient_failure_reraises_until_last_attempt(store):
     rid = store.open_run(1, "o/r", 5, "h1")
     with pytest.raises(ModelUnavailable):
         run_review(Svc(gh, FakeModel(fail=True), store), rid, attempt=0)
-    assert store.get_run(rid).status == "pending" and gh.issue_comments == []
+    assert store.get_run(rid).status == "pending" and gh.conversation_bodies() == []
     assert run_review(Svc(gh, FakeModel(fail=True), store), rid, attempt=3) == "failed"
     run = store.get_run(rid)
     assert run.status == "failed" and "ModelUnavailable" in run.error
-    assert gh.issue_comments == [FAILURE_COMMENT.format(reason="the review model is unavailable")]
+    assert gh.conversation_bodies() == [
+        FAILURE_COMMENT.format(reason="the review model is unavailable")]
 
 
 def test_failed_run_can_be_reopened_but_done_runs_cannot(store):

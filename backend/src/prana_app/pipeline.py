@@ -12,6 +12,8 @@
 5. Post one review (one notification) with the inline comments and a summary.
    If GitHub rejects an inline comment, post the summary with every finding
    in it rather than lose the review.
+6. Optionally write or update the PR walkthrough comment (`walkthrough.py`);
+   it runs after the review is on GitHub and never fails the job.
 
 Everything external is injected, so tests run with fakes and no network.
 """
@@ -26,6 +28,7 @@ from dataclasses import dataclass, field
 from prana_app.diff import Hunk, reviewable_hunks
 from prana_app.github import GitHubError
 from prana_app.review import Finding, finding_from, is_duplicate, summary
+from prana_app.walkthrough import GenerateFn, post_walkthrough
 
 log = logging.getLogger("prana_app.pipeline")
 
@@ -62,6 +65,7 @@ class Outcome:
     low_confidence: list[Finding] = field(default_factory=list)
     review_id: int | None = None
     seconds: float = 0.0
+    walkthrough: str = ""           # created | updated | unusable | failed | "" (off)
 
 
 def _start_scan(gh, scan: ScanFn, repo: str, head_sha: str, files: list[dict]):
@@ -108,14 +112,16 @@ def _rule_findings(scanned: dict[str, list], files: list[dict]) -> list[Finding]
                 path=path, line=h.line, line_exact=True,
                 severity="critical" if h.severity in ("error", "critical") else "warning",
                 issue_type="SECURITY", explanation=h.message, suggestion="",
-                confidence=1.0, rule=h.rule))
+                confidence=1.0, rule=h.rule, cwe=getattr(h, "cwe", ()),
+                owasp=getattr(h, "owasp", ()), url=getattr(h, "url", "")))
     return out
 
 
 def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: int,
                         head_sha: str, retrieve: RetrieveFn | None = None,
                         clock: Callable[[], float] = time.monotonic,
-                        scan: ScanFn | None = None) -> Outcome:
+                        scan: ScanFn | None = None,
+                        walkthrough: GenerateFn | None = None) -> Outcome:
     started = clock()
     pr = gh.pull_request(repo, number)
     if pr.get("head", {}).get("sha") != head_sha:
@@ -185,8 +191,10 @@ def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: i
             out.posted.append(f)
     out.posted.sort(key=lambda f: (f.path, f.line))
 
+    adapter = next((f.adapter for f in findings if f.adapter), "")
     body = summary(out.posted, out.low_confidence, out.hunks_reviewed, total,
-                   out.hunks_failed, out.hunks_skipped_time, out.duplicates)
+                   out.hunks_failed, out.hunks_skipped_time, out.duplicates,
+                   head_sha=head_sha, adapter=adapter)
     try:
         res = gh.create_review(repo, number, head_sha, body,
                                [f.as_github_comment() for f in out.posted])
@@ -199,9 +207,13 @@ def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: i
         log.warning("inline comments rejected (%s); posting summary only", e)
         everything = summary([], out.posted + out.low_confidence, out.hunks_reviewed, total,
                              out.hunks_failed, out.hunks_skipped_time, out.duplicates,
-                             held_back_title="Findings that could not be placed inline")
+                             held_back_title="Findings that could not be placed inline",
+                             head_sha=head_sha, adapter=adapter)
         res = gh.create_review(repo, number, head_sha, everything, [])
         out.status = "posted_summary_only"
     out.review_id = res.get("id")
+    if walkthrough is not None:
+        out.walkthrough = post_walkthrough(gh, walkthrough, repo, number, head_sha,
+                                           pr.get("title") or "", files, policy.bot_login)
     out.seconds = clock() - started
     return out
