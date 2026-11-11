@@ -14,6 +14,7 @@ SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
 SEVERITY_ICON = {"critical": "🔴", "warning": "🟠", "info": "🔵"}
 MARKER = "<!-- prana:{fp} -->"
 _MARKER_RE = re.compile(r"<!-- prana:([0-9a-f]{16}) -->")
+_RULE_RE = re.compile(r"Semgrep rule <code>([^<]+)</code>")
 DUPLICATE_SIMILARITY = 0.9
 DUPLICATE_LINE_WINDOW = 3
 
@@ -75,11 +76,24 @@ def finding_from(hunk: Hunk, result: dict) -> Finding | None:
         model=result.get("model") or "", adapter=result.get("adapter") or "")
 
 
+def _explanation_of(body: str) -> str:
+    """The explanation inside a comment `Finding.body` rendered: the text after
+    the severity badge, before the suggestion and footer. Any other comment
+    (a human's) is returned whole."""
+    text = _MARKER_RE.sub("", body or "")
+    text = re.split(r"\n\*\*Suggestion:\*\*|\n<sub>", text, maxsplit=1)[0]
+    _, sep, rest = text.partition(" — ")
+    return rest if sep else text
+
+
 def is_duplicate(f: Finding, existing: list[dict]) -> bool:
-    """`existing`: the PR's review comments ({path, line, body}). Same marker,
-    or same file, nearby line and near-identical text."""
+    """`existing`: the PR's review comments ({path, line, body}). Same marker;
+    or same file and nearby line with the same Semgrep rule or near-identical
+    explanation. The fingerprint includes the line, so a later commit that
+    shifts the code (an added import) needs the nearby-line checks."""
     for c in existing:
-        m = _MARKER_RE.search(c.get("body") or "")
+        body = c.get("body") or ""
+        m = _MARKER_RE.search(body)
         if m and m.group(1) == f.fingerprint:
             return True
         if c.get("path") != f.path:
@@ -87,8 +101,12 @@ def is_duplicate(f: Finding, existing: list[dict]) -> bool:
         line = c.get("line") or c.get("original_line")
         if isinstance(line, int) and abs(line - f.line) > DUPLICATE_LINE_WINDOW:
             continue
-        body = _MARKER_RE.sub("", c.get("body") or "")
-        ratio = difflib.SequenceMatcher(None, _norm(body), _norm(f.explanation)).ratio()
+        if f.rule:
+            r = _RULE_RE.search(body)
+            if r and r.group(1) == f.rule:
+                return True
+        ratio = difflib.SequenceMatcher(None, _norm(_explanation_of(body)),
+                                        _norm(f.explanation)).ratio()
         if ratio >= DUPLICATE_SIMILARITY:
             return True
     return False

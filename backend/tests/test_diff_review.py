@@ -78,6 +78,28 @@ def test_duplicates_by_marker_and_by_near_identical_text():
     assert not is_duplicate(f, [{"path": "a.py", "line": 10, "body": "Rename this variable."}])
 
 
+def test_posted_comment_still_matches_after_a_commit_shifts_its_line():
+    # Seen live on the demo repo: an added import moved a finding from line 14
+    # to 15, so the fingerprint changed and the full rendered body (badge,
+    # suggestion, footer) never reached 0.9 similarity with the bare text.
+    old = _f(line=14, suggestion="Use json with an HMAC-signed cookie instead.")
+    moved = _f(line=15, suggestion="Use json with an HMAC-signed cookie instead.")
+    assert old.fingerprint != moved.fingerprint
+    assert is_duplicate(moved, [{"path": "a.py", "line": 15, "body": old.body()}])
+
+
+def test_semgrep_finding_matches_by_rule_near_the_same_line():
+    rule = "python.lang.security.deserialization.pickle.avoid-pickle"
+    old = _f(line=14, rule=rule, explanation="Avoid using `pickle`.")
+    reworded = _f(line=15, rule=rule, explanation="pickle on untrusted data runs code.")
+    assert is_duplicate(reworded, [{"path": "a.py", "line": 15, "body": old.body()}])
+    other_rule = _f(line=15, rule="python.lang.security.audit.subprocess-shell-true",
+                    explanation="pickle on untrusted data runs code.")
+    assert not is_duplicate(other_rule, [{"path": "a.py", "line": 15, "body": old.body()}])
+    far = _f(line=40, rule=rule, explanation="Avoid using `pickle`.")
+    assert not is_duplicate(far, [{"path": "a.py", "line": 15, "body": old.body()}])
+
+
 def test_summary_reports_counts_and_what_was_left_out():
     s = summary([_f(severity="critical"), _f(severity="warning")], [_f(confidence=0.1)],
                 reviewed=5, total=9, failed=1, skipped_for_time=2, duplicates=1)
