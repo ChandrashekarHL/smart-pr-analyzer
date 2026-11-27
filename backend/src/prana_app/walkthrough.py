@@ -165,14 +165,60 @@ def post_walkthrough(gh, generate: GenerateFn, repo: str, number: int, head_sha:
                      title: str, files: list[dict],
                      bot_login: str = "prana-reviewer[bot]") -> str:
     """created | updated | unusable | failed. Never raises: the walkthrough is
-    an extra, and the review is already on GitHub when this runs."""
+    an extra, and the review is already on GitHub when this runs. When no
+    walkthrough can be written, the progress comment still turns into a
+    "review posted" note, so it never stays at "reviewing"."""
     try:
         text = generate(build_messages(title, files))
         w = parse(text, [f.get("filename", "") for f in files])
-        if not w.usable:
-            log.warning("walkthrough for %s#%s unusable: %r", repo, number, (text or "")[:200])
-            return "unusable"
-        return upsert(gh, repo, number, render(w, files, head_sha), bot_login)
+        if w.usable:
+            return upsert(gh, repo, number, render(w, files, head_sha), bot_login)
+        log.warning("walkthrough for %s#%s unusable: %r", repo, number, (text or "")[:200])
+        status = "unusable"
     except Exception as e:  # noqa: BLE001 - see docstring
         log.warning("walkthrough for %s#%s failed: %s", repo, number, e)
-        return "failed"
+        status = "failed"
+    set_status(gh, repo, number, done_body(head_sha), bot_login)
+    return status
+
+
+# ---------------------------------------------------------------- progress
+# The same comment shows progress while the review runs, so a pull request
+# never looks idle for the ~20 s the model needs: "reviewing" right after the
+# webhook, then the walkthrough (or a short note) when the review is posted.
+
+def progress_body(head_sha: str, hunks: int, files: int, semgrep: bool) -> str:
+    engines = "the fine-tuned DeepSeek-Coder model"
+    if semgrep:
+        engines += " and Semgrep security rules"
+    return "\n".join([
+        "## ⏳ prana is reviewing this pull request", "",
+        f"Reviewing **{hunks}** changed {'hunk' if hunks == 1 else 'hunks'} in **{files}** "
+        f"{'file' if files == 1 else 'files'} at commit `{head_sha[:7]}` with {engines}. "
+        "The review and a walkthrough will appear in about 20–30 seconds.", "",
+        "<sub>This comment updates itself when the review is done.</sub>", MARKER])
+
+
+def done_body(head_sha: str) -> str:
+    return "\n".join([
+        "## ✅ prana review posted", "",
+        f"The review of commit `{head_sha[:7]}` is above. A walkthrough could not be written "
+        "for this commit.", MARKER])
+
+
+def interrupted_body(head_sha: str, reason: str) -> str:
+    return "\n".join([
+        "## ⚠️ prana could not finish this review yet", "",
+        f"The review of commit `{head_sha[:7]}` was interrupted: {reason}. It is retried "
+        "automatically; if it keeps failing, a comment below explains why.", MARKER])
+
+
+def set_status(gh, repo: str, number: int, body: str, bot_login: str) -> bool:
+    """Write the progress comment. Never raises: a status update must not
+    block or fail the review it describes."""
+    try:
+        upsert(gh, repo, number, body, bot_login)
+        return True
+    except Exception as e:  # noqa: BLE001 - see docstring
+        log.warning("status comment for %s#%s failed: %s", repo, number, e)
+        return False

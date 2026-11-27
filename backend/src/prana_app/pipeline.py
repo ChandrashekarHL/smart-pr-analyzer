@@ -28,7 +28,13 @@ from dataclasses import dataclass, field
 from prana_app.diff import Hunk, reviewable_hunks
 from prana_app.github import GitHubError
 from prana_app.review import Finding, finding_from, is_duplicate, summary
-from prana_app.walkthrough import GenerateFn, post_walkthrough
+from prana_app.walkthrough import (
+    GenerateFn,
+    interrupted_body,
+    post_walkthrough,
+    progress_body,
+    set_status,
+)
 
 log = logging.getLogger("prana_app.pipeline")
 
@@ -140,78 +146,90 @@ def review_pull_request(gh, model: ModelFn, policy: Policy, repo: str, number: i
     if not hunks:
         out.seconds = clock() - started
         return out
-    scan_thread = _start_scan(gh, scan, repo, head_sha, files) if scan else None
-
-    findings: list[Finding] = []
-    per_hunk = 0.0
-    for i, h in enumerate(hunks):
-        elapsed = clock() - started
-        if i and elapsed + per_hunk > policy.time_budget_s:
-            out.hunks_skipped_time = len(hunks) - i
-            break
-        t = clock()
-        ctx = None
-        if retrieve is not None:
-            try:
-                ctx = retrieve(h, repo, number, base_sha) or None
-            except Exception as e:  # noqa: BLE001 - retrieval never blocks a review
-                log.warning("retrieve failed for %s: %s", h.path, e)
-        try:
-            result = model(h.text, h.language, ctx, h.path)
-        except Exception as e:  # noqa: BLE001 - one bad hunk must not sink the PR
-            log.warning("model failed for %s: %s", h.path, e)
-            out.hunks_failed += 1
-            continue
-        finally:
-            per_hunk = max(per_hunk, clock() - t)
-        out.hunks_reviewed += 1
-        f = finding_from(h, result)
-        if f is None:
-            out.hunks_failed += 1
-        else:
-            findings.append(f)
-
-    if out.hunks_reviewed == 0 and out.hunks_failed:
-        raise ModelUnavailable(f"all {out.hunks_failed} model calls failed")
-
-    if scan_thread is not None:
-        thread, holder = scan_thread
-        thread.join(timeout=SCAN_GRACE_S)
-        rules = _rule_findings(holder.get("result") or {}, files)
-        out.rule_findings = len(rules)
-        findings.extend(rules)
-
-    existing = [c for c in gh.review_comments(repo, number)]
-    for f in findings:
-        if is_duplicate(f, existing):
-            out.duplicates += 1
-        elif f.confidence < policy.min_confidence:
-            out.low_confidence.append(f)
-        else:
-            out.posted.append(f)
-    out.posted.sort(key=lambda f: (f.path, f.line))
-
-    adapter = next((f.adapter for f in findings if f.adapter), "")
-    body = summary(out.posted, out.low_confidence, out.hunks_reviewed, total,
-                   out.hunks_failed, out.hunks_skipped_time, out.duplicates,
-                   head_sha=head_sha, adapter=adapter)
+    progress = walkthrough is not None
+    if progress:
+        set_status(gh, repo, number,
+                   progress_body(head_sha, len(hunks), len({h.path for h in hunks}),
+                                 scan is not None), policy.bot_login)
     try:
-        res = gh.create_review(repo, number, head_sha, body,
-                               [f.as_github_comment() for f in out.posted])
-        out.status = "posted"
-    except GitHubError as e:
-        if e.status != 422:
-            raise
-        # An inline target GitHub refuses (e.g. the head moved under us): keep
-        # the review, in the summary.
-        log.warning("inline comments rejected (%s); posting summary only", e)
-        everything = summary([], out.posted + out.low_confidence, out.hunks_reviewed, total,
-                             out.hunks_failed, out.hunks_skipped_time, out.duplicates,
-                             held_back_title="Findings that could not be placed inline",
-                             head_sha=head_sha, adapter=adapter)
-        res = gh.create_review(repo, number, head_sha, everything, [])
-        out.status = "posted_summary_only"
-    out.review_id = res.get("id")
+        scan_thread = _start_scan(gh, scan, repo, head_sha, files) if scan else None
+
+        findings: list[Finding] = []
+        per_hunk = 0.0
+        for i, h in enumerate(hunks):
+            elapsed = clock() - started
+            if i and elapsed + per_hunk > policy.time_budget_s:
+                out.hunks_skipped_time = len(hunks) - i
+                break
+            t = clock()
+            ctx = None
+            if retrieve is not None:
+                try:
+                    ctx = retrieve(h, repo, number, base_sha) or None
+                except Exception as e:  # noqa: BLE001 - retrieval never blocks a review
+                    log.warning("retrieve failed for %s: %s", h.path, e)
+            try:
+                result = model(h.text, h.language, ctx, h.path)
+            except Exception as e:  # noqa: BLE001 - one bad hunk must not sink the PR
+                log.warning("model failed for %s: %s", h.path, e)
+                out.hunks_failed += 1
+                continue
+            finally:
+                per_hunk = max(per_hunk, clock() - t)
+            out.hunks_reviewed += 1
+            f = finding_from(h, result)
+            if f is None:
+                out.hunks_failed += 1
+            else:
+                findings.append(f)
+
+        if out.hunks_reviewed == 0 and out.hunks_failed:
+            raise ModelUnavailable(f"all {out.hunks_failed} model calls failed")
+
+        if scan_thread is not None:
+            thread, holder = scan_thread
+            thread.join(timeout=SCAN_GRACE_S)
+            rules = _rule_findings(holder.get("result") or {}, files)
+            out.rule_findings = len(rules)
+            findings.extend(rules)
+
+        existing = [c for c in gh.review_comments(repo, number)]
+        for f in findings:
+            if is_duplicate(f, existing):
+                out.duplicates += 1
+            elif f.confidence < policy.min_confidence:
+                out.low_confidence.append(f)
+            else:
+                out.posted.append(f)
+        out.posted.sort(key=lambda f: (f.path, f.line))
+
+        adapter = next((f.adapter for f in findings if f.adapter), "")
+        body = summary(out.posted, out.low_confidence, out.hunks_reviewed, total,
+                       out.hunks_failed, out.hunks_skipped_time, out.duplicates,
+                       head_sha=head_sha, adapter=adapter)
+        try:
+            res = gh.create_review(repo, number, head_sha, body,
+                                   [f.as_github_comment() for f in out.posted])
+            out.status = "posted"
+        except GitHubError as e:
+            if e.status != 422:
+                raise
+            # An inline target GitHub refuses (e.g. the head moved under us): keep
+            # the review, in the summary.
+            log.warning("inline comments rejected (%s); posting summary only", e)
+            everything = summary([], out.posted + out.low_confidence, out.hunks_reviewed, total,
+                                 out.hunks_failed, out.hunks_skipped_time, out.duplicates,
+                                 held_back_title="Findings that could not be placed inline",
+                                 head_sha=head_sha, adapter=adapter)
+            res = gh.create_review(repo, number, head_sha, everything, [])
+            out.status = "posted_summary_only"
+        out.review_id = res.get("id")
+    except Exception as e:
+        if progress:
+            reason = ("the review model is unavailable" if isinstance(e, ModelUnavailable)
+                      else "an internal error")
+            set_status(gh, repo, number, interrupted_body(head_sha, reason), policy.bot_login)
+        raise
     if walkthrough is not None:
         out.walkthrough = post_walkthrough(gh, walkthrough, repo, number, head_sha,
                                            pr.get("title") or "", files, policy.bot_login)

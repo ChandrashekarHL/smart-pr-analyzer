@@ -80,7 +80,7 @@ def test_one_comment_per_pr_edited_on_each_commit():
     assert gh.conversation[0]["body"] == f"I copied your {MARKER}"      # a human's, untouched
 
 
-def test_unusable_or_failing_generation_posts_nothing():
+def test_unusable_or_failing_generation_leaves_a_short_note_not_a_walkthrough():
     gh = FakeGitHub()
     assert post_walkthrough(gh, lambda m: "I cannot help with that.", "o/r", 5, "h1", "t",
                             FILES) == "unusable"
@@ -88,7 +88,11 @@ def test_unusable_or_failing_generation_posts_nothing():
     def boom(messages):
         raise TimeoutError("model API timed out")
     assert post_walkthrough(gh, boom, "o/r", 5, "h1", "t", FILES) == "failed"
-    assert gh.conversation == []
+    # one comment, edited: the "review posted" note replaces any "reviewing" status
+    assert len(gh.conversation) == 1
+    body = gh.conversation[0]["body"]
+    assert "prana review posted" in body and "## Walkthrough" not in body
+    assert "timed out" not in body                        # internal errors are not shown
 
 
 def test_pipeline_posts_the_walkthrough_after_the_review(gh):
@@ -98,8 +102,46 @@ def test_pipeline_posts_the_walkthrough_after_the_review(gh):
         seen.append(len(gh.posted))          # the review is already on GitHub
         return MODEL_TEXT.replace("services/inventory/stock.go", "app/api.py")
     out = review_pull_request(gh, FakeModel(), Policy(), "o/r", 5, "h1", walkthrough=generate)
-    assert out.status == "posted" and out.walkthrough == "created" and seen == [1]
-    assert MARKER in gh.conversation[0]["body"]
+    # "updated": the progress comment posted at the start becomes the walkthrough
+    assert out.status == "posted" and out.walkthrough == "updated" and seen == [1]
+    assert len(gh.conversation) == 1 and MARKER in gh.conversation[0]["body"]
+
+
+def test_progress_comment_appears_before_the_model_runs_then_becomes_the_walkthrough(gh):
+    seen = []
+
+    def model(hunk, language, context, path):
+        seen.append([c["body"] for c in gh.conversation])     # what the PR shows meanwhile
+        return FakeModel()(hunk, language, context, path)
+
+    out = review_pull_request(gh, model, Policy(), "o/r", 5, "h1", walkthrough=lambda m: MODEL_TEXT)
+    assert out.status == "posted" and seen
+    assert "prana is reviewing this pull request" in seen[0][0] and "`h1`" in seen[0][0]
+    assert len(gh.conversation) == 1                           # the same comment, edited
+    assert gh.conversation[0]["body"].startswith("## Walkthrough")
+
+
+def test_progress_comment_never_stays_at_reviewing(gh):
+    from prana_app.pipeline import ModelUnavailable
+    try:
+        review_pull_request(gh, FakeModel(fail=True), Policy(), "o/r", 5, "h1",
+                            walkthrough=lambda m: MODEL_TEXT)
+    except ModelUnavailable:
+        pass
+    else:
+        raise AssertionError("expected ModelUnavailable")
+    assert "could not finish this review" in gh.conversation[0]["body"]
+    assert "review model is unavailable" in gh.conversation[0]["body"]
+
+    gh2 = FakeGitHub()
+    review_pull_request(gh2, FakeModel(), Policy(), "o/r", 5, "h1",
+                        walkthrough=lambda m: "no sections here")
+    assert len(gh2.conversation) == 1 and "prana review posted" in gh2.conversation[0]["body"]
+
+
+def test_no_progress_comment_when_the_walkthrough_is_off(gh):
+    review_pull_request(gh, FakeModel(), Policy(), "o/r", 5, "h1")
+    assert gh.conversation == []
 
 
 def test_a_failing_walkthrough_never_breaks_the_review(gh):
