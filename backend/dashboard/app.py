@@ -135,4 +135,20 @@ st.subheader("Training and evaluation")
 if wandb_url:
     st.components.v1.iframe(wandb_url, height=600, scrolling=True)
 else:
-    st.caption("Set WANDB_REPORT_URL to embed the public Weights & Biases report here.")
+    st.caption(f"Deployed model: {data.DEPLOYED_MODEL}. Measured on 1,190 reviews from 234 "
+               "repositories never used in training.")
+    left, right = st.columns(2)
+    with left:
+        st.dataframe(pd.DataFrame(data.MODEL_RESULTS), hide_index=True, width="stretch",
+                     column_config={v: st.column_config.NumberColumn(format="%.3g")
+                                    for v in ("v1.0", "v1.1", "v1.3")})
+    with right:
+        det = pd.DataFrame(data.detection_rows())
+        st.altair_chart(alt.Chart(det).mark_bar().encode(
+            y=alt.Y("benchmark:N", title=None, sort=None),
+            x=alt.X("percent:Q", title="percent of benchmark cases"),
+            yOffset="version:N",
+            color=alt.Color("version:N", scale=alt.Scale(range=["#8faadc", "#1f3864"]),
+                            title=None)),
+            width="stretch")
+        st.caption("Planted-bug and security benchmarks; lower is better for false alarms.")

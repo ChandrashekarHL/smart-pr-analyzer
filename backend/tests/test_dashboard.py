@@ -187,7 +187,11 @@ def test_page_renders_kpis_charts_and_tables(seeded, monkeypatch, tmp_path):
     assert [s.value for s in at.subheader] == [
         "Review time per day", "Comments by severity", "Comments by issue type",
         "Model confidence", "Recent reviews", "Recent comments", "Training and evaluation"]
-    assert len(at.dataframe) == 2 and len(at.dataframe[0].value) == 3
+    # recent reviews, recent comments, and the model-evaluation table (no W&B URL set)
+    assert len(at.dataframe) == 3 and len(at.dataframe[0].value) == 3
+    evaluation = at.dataframe[2].value
+    assert list(evaluation.columns) == ["metric", "v1.0", "v1.1", "v1.3"]
+    assert evaluation.set_index("metric").loc["Exact line (%)", "v1.3"] == 36.8
     assert not at.error
 
 
